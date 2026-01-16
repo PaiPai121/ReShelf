@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReShelf - 书签整理</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 100%;
+      margin: 0 auto;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      color: #2c3e50;
+      margin-bottom: 8px;
+    }
+
+    .header p {
+      color: #7f8c8d;
+      font-size: 14px;
+    }
+
+    .button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      width: 100%;
+      margin-bottom: 16px;
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .button:active {
+      transform: translateY(0);
+    }
+
+    .button:disabled {
+      background: #bdc3c7;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .button-secondary {
+      background: #34495e;
+    }
+
+    .button-secondary:hover {
+      box-shadow: 0 4px 12px rgba(52, 73, 94, 0.4);
+    }
+
+    .button-danger {
+      background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+      font-size: 12px;
+      padding: 8px 12px;
+    }
+
+    .button-danger:hover {
+      box-shadow: 0 4px 12px rgba(231, 76, 60, 0.4);
+    }
+
+    .section {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #2c3e50;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-title::before {
+      content: '';
+      width: 4px;
+      height: 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 2px;
+    }
+
+    .list {
+      list-style: none;
+    }
+
+    .list-item {
+      padding: 12px;
+      border-bottom: 1px solid #ecf0f1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: background 0.2s;
+    }
+
+    .list-item:last-child {
+      border-bottom: none;
+    }
+
+    .list-item:hover {
+      background: #f8f9fa;
+    }
+
+    .list-item-title {
+      font-size: 14px;
+      color: #2c3e50;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-right: 12px;
+    }
+
+    .list-item-url {
+      font-size: 12px;
+      color: #7f8c8d;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 200px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+
+    .badge-error {
+      background: #fee;
+      color: #c0392b;
+    }
+
+    .badge-warning {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .badge-info {
+      background: #d1ecf1;
+      color: #0c5460;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #95a5a6;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #7f8c8d;
+    }
+
+    .spinner {
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 12px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .stat-number {
+      font-size: 24px;
+      font-weight: 700;
+      color: #667eea;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #7f8c8d;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      margin-bottom: 8px;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+
+    .form-input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .form-hint {
+      display: block;
+      font-size: 12px;
+      color: #7f8c8d;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+
+    .button-small {
+      padding: 8px 16px;
+      font-size: 13px;
+      margin-bottom: 0;
+    }
+
+    .button-ai {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+
+    .button-ai:hover {
+      box-shadow: 0 4px 12px rgba(245, 87, 108, 0.4);
+    }
+
+    .toggle-btn {
+      background: none;
+      border: none;
+      color: #667eea;
+      cursor: pointer;
+      font-size: 12px;
+      margin-left: auto;
+      padding: 4px 8px;
+    }
+
+    .api-status {
+      margin-top: 12px;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: none;
+    }
+
+    .api-status.success {
+      background: #d4edda;
+      color: #155724;
+      display: block;
+    }
+
+    .api-status.error {
+      background: #f8d7da;
+      color: #721c24;
+      display: block;
+    }
+
+    .folder-tree {
+      max-height: 400px;
+      overflow-y: auto;
+      padding: 12px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .folder-item {
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      background: white;
+      border-radius: 6px;
+      border-left: 3px solid #667eea;
+    }
+
+    .folder-path {
+      font-weight: 600;
+      color: #2c3e50;
+      margin-bottom: 4px;
+    }
+
+    .folder-bookmarks {
+      font-size: 12px;
+      color: #7f8c8d;
+      margin-left: 12px;
+    }
+
+    .folder-bookmark-item {
+      padding: 4px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .folder-bookmark-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .bookmark-move {
+      font-size: 11px;
+      color: #95a5a6;
+      margin-left: 8px;
+    }
+
+    .bookmark-move::before {
+      content: "→";
+      margin-right: 4px;
+      color: #667eea;
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .preview-actions .button {
+      flex: 1;
+    }
+
+    .tree-view {
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 13px;
+    }
+
+    .tree-node {
+      margin-left: 16px;
+      padding: 4px 0;
+    }
+
+    .tree-node-path {
+      color: #667eea;
+      font-weight: 600;
+    }
+
+    .tree-node-count {
+      color: #7f8c8d;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📚 ReShelf</h1>
+      <p>AI驱动的智能书签整理</p>
+    </div>
+
+    <!-- API 设置区域 -->
+    <div class="section" id="apiSettingsSection">
+      <div class="section-title">
+        <span>⚙️ API 设置</span>
+        <button id="toggleApiSettings" class="toggle-btn">▼</button>
+      </div>
+      <div id="apiSettingsContent" style="display: none;">
+        <div class="form-group">
+          <label for="apiProvider">API 提供商</label>
+          <select id="apiProvider" class="form-input">
+            <option value="gemini">Google Gemini</option>
+            <option value="zhipu">智谱 AI (GLM)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="apiKey">API Key</label>
+          <input type="password" id="apiKey" class="form-input" placeholder="请输入 API Key">
+        </div>
+        <div class="form-group">
+          <label for="apiBaseUrl">Base URL</label>
+          <input type="text" id="apiBaseUrl" class="form-input" placeholder="使用默认 URL（留空）或自定义">
+          <small class="form-hint">Gemini 默认: https://generativelanguage.googleapis.com/v1beta<br>智谱 AI 默认: https://open.bigmodel.cn/api/paas/v4</small>
+        </div>
+        <button id="saveApiSettings" class="button button-small">💾 保存设置</button>
+        <div id="apiStatus" class="api-status"></div>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+      <button id="scanBtn" class="button" style="flex: 1;">🔍 扫描书签</button>
+      <button id="exportBackupBtn" class="button button-secondary" style="flex: 1;">💾 导出备份</button>
+    </div>
+    <button id="classifyBtn" class="button button-ai" style="display: none; width: 100%;">🤖 AI 智能分类</button>
+
+    <div id="stats" class="stats" style="display: none;">
+      <div class="stat-card">
+        <div class="stat-number" id="brokenCount">0</div>
+        <div class="stat-label">失效链接</div>
+        <button id="cleanAllBrokenBtn" class="button button-small button-danger" style="display: none; margin-top: 8px; width: 100%;">🗑️ 清理所有失效</button>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="duplicateCount">0</div>
+        <div class="stat-label">重复项</div>
+        <button id="cleanAllDuplicatesBtn" class="button button-small button-danger" style="display: none; margin-top: 8px; width: 100%;">🗑️ 清理所有重复</button>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="suggestionCount">0</div>
+        <div class="stat-label">建议分类</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">待清理（失效链接）</div>
+      <ul id="brokenList" class="list">
+        <li class="empty-state">
+          <div class="empty-state-icon">🔗</div>
+          <div>点击"扫描书签"开始检测</div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">
+        <span>重复项</span>
+        <button id="removeDuplicatesBtn" class="button button-small" style="display: none; margin-left: auto; padding: 6px 12px; font-size: 12px;">🗑️ 一键删除重复</button>
+      </div>
+      <ul id="duplicateList" class="list">
+        <li class="empty-state">
+          <div class="empty-state-icon">📋</div>
+          <div>点击"扫描书签"开始检测</div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">建议分类</div>
+      <ul id="suggestionList" class="list">
+        <li class="empty-state">
+          <div class="empty-state-icon">✨</div>
+          <div>点击"扫描书签"开始分析</div>
+        </li>
+      </ul>
+    </div>
+
+    <!-- AI 分类预览区域 -->
+    <div class="section" id="aiPreviewSection" style="display: none;">
+      <div class="section-title">📁 AI 建议的目录结构</div>
+      <div id="folderTree" class="folder-tree"></div>
+      <div class="preview-actions">
+        <button id="confirmOrganizeBtn" class="button">✅ 确认整理</button>
+        <button id="cancelOrganizeBtn" class="button button-secondary">❌ 取消</button>
+      </div>
+    </div>
+
+    <button id="restructureBtn" class="button button-secondary" disabled>🚀 一键重构书签</button>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
