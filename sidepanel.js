@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 监听来自 background 的消息
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log('[sidepanel] 收到消息:', message.type, message);
     if (message.type === 'scanProgress') {
       updateProgress(message.data);
     } else if (message.type === 'scanComplete') {
@@ -57,6 +58,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (message.type === 'classifyProgress') {
       updateClassifyProgress(message.data);
     } else if (message.type === 'classifyComplete') {
+      console.log('[sidepanel] 收到 classifyComplete 消息，数据:', message.data);
       handleClassifyComplete(message.data);
     }
   });
@@ -78,6 +80,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   saveApiSettings.addEventListener('click', saveApiSettingsHandler);
+
+  // 测试连接按钮
+  const testApiConnection = document.getElementById('testApiConnection');
+  testApiConnection.addEventListener('click', testApiConnectionHandler);
 
   // AI 预览相关事件
   confirmOrganizeBtn.addEventListener('click', confirmOrganize);
@@ -115,7 +121,7 @@ async function startScan() {
 // 更新扫描进度
 function updateProgress(data) {
   // 可以在这里显示进度信息
-  console.log('Scan progress:', data);
+  // console.log('Scan progress:', data); // 减少日志输出
 }
 
 // 处理扫描完成
@@ -147,13 +153,13 @@ function handleScanComplete(data) {
     }
   });
   
-  // 更新统计
-  updateStats();
-  
   // 更新列表
   updateBrokenList(data.broken);
   updateDuplicateList(data.duplicates);
   updateSuggestionList(data.suggestions);
+  
+  // 更新统计（注意：不要覆盖已有的 AI 分类结果）
+  updateStats();
   
   // 启用重构按钮
   if (data.broken.length > 0 || data.duplicates.length > 0 || data.suggestions.length > 0) {
@@ -191,8 +197,39 @@ function flattenBookmarkTree(tree) {
 function updateStats() {
   brokenCount.textContent = scanResults.broken.length;
   duplicateCount.textContent = scanResults.duplicates.length;
-  suggestionCount.textContent = scanResults.suggestions.length;
+  
+  // 建议分类数量：如果有 AI 分类结果，显示分类数量；否则显示0
+  console.log('[updateStats] ========== 更新统计信息 ==========');
+  console.log('[updateStats] aiClassificationResult:', aiClassificationResult);
+  
+  const suggestionHint = document.getElementById('suggestionHintText');
+  
+  if (aiClassificationResult && aiClassificationResult.folders && Array.isArray(aiClassificationResult.folders)) {
+    const totalSuggestions = aiClassificationResult.folders.reduce((sum, folder) => {
+      const count = folder.bookmarks ? folder.bookmarks.length : 0;
+      console.log('[updateStats] 文件夹:', folder.folder, '书签数:', count);
+      return sum + count;
+    }, 0);
+    console.log('[updateStats] 总建议分类数:', totalSuggestions);
+    suggestionCount.textContent = totalSuggestions;
+    console.log('[updateStats] suggestionCount 元素已更新为:', totalSuggestions);
+    
+    // 更新提示文字
+    if (suggestionHint) {
+      suggestionHint.textContent = `${totalSuggestions} 个书签已分类`;
+    }
+  } else {
+    console.log('[updateStats] 无 AI 分类结果，显示 0');
+    suggestionCount.textContent = '0';
+    
+    // 更新提示文字
+    if (suggestionHint) {
+      suggestionHint.textContent = '点击"AI 智能分类"按钮生成';
+    }
+  }
+  
   stats.style.display = 'grid';
+  console.log('[updateStats] ========== 统计信息更新完成 ==========');
   
   // 显示/隐藏清理按钮
   if (scanResults.broken.length > 0) {
@@ -434,6 +471,49 @@ function showApiStatus(message, type) {
   apiStatus.textContent = message;
   apiStatus.className = `api-status ${type}`;
   apiStatus.style.display = 'block';
+  
+  // 如果是成功或错误，3秒后自动隐藏
+  if (type === 'success' || type === 'error') {
+    setTimeout(() => {
+      apiStatus.style.display = 'none';
+    }, 3000);
+  }
+}
+
+// 测试 API 连接
+async function testApiConnectionHandler() {
+  const provider = apiProvider.value;
+  const key = apiKey.value.trim();
+  const baseUrl = apiBaseUrl.value.trim();
+  
+  if (!key) {
+    showApiStatus('请先输入 API Key', 'error');
+    return;
+  }
+  
+  testApiConnection.disabled = true;
+  testApiConnection.textContent = '测试中...';
+  showApiStatus('正在测试连接...', 'info');
+  
+  chrome.runtime.sendMessage({
+    type: 'testApiConnection',
+    data: {
+      apiProvider: provider,
+      apiKey: key,
+      apiBaseUrl: baseUrl
+    }
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('Error:', chrome.runtime.lastError);
+      showApiStatus('测试失败：' + chrome.runtime.lastError.message, 'error');
+    } else if (response.error) {
+      showApiStatus('测试失败：' + response.error, 'error');
+    } else {
+      showApiStatus('✅ 连接成功！API 配置正确', 'success');
+    }
+    testApiConnection.disabled = false;
+    testApiConnection.textContent = '🔌 测试连接';
+  });
 }
 
 // AI 分类相关函数
@@ -447,10 +527,13 @@ async function startAIClassification() {
     return;
   }
   
-  if (validBookmarks.length === 0) {
-    alert('没有可分类的书签');
+  // 空数据检查
+  if (!validBookmarks || validBookmarks.length === 0) {
+    alert('没有可供 AI 分类的有效书签。请先扫描书签，确保有存活的、非重复的书签。');
     return;
   }
+  
+  console.log('[startAIClassification] 开始分类，有效书签数:', validBookmarks.length);
   
   classifyBtn.disabled = true;
   classifyBtn.textContent = 'AI 分析中...';
@@ -459,7 +542,8 @@ async function startAIClassification() {
   folderTree.innerHTML = `
     <div class="loading">
       <div class="spinner"></div>
-      <div>正在使用 AI 分析书签并生成分类建议...</div>
+      <div>AI 正在思考中...</div>
+      <div style="font-size: 12px; color: #7f8c8d; margin-top: 8px;">正在使用 AI 分析 ${validBookmarks.length} 个书签并生成分类建议...</div>
     </div>
   `;
   aiPreviewSection.style.display = 'block';
@@ -488,47 +572,95 @@ async function startAIClassification() {
 }
 
 function updateClassifyProgress(data) {
-  console.log('Classification progress:', data);
+  console.log('[updateClassifyProgress]', data);
   if (data.message) {
+    // 提取批次信息
+    const batchMatch = data.message.match(/第 (\d+) 批/);
+    const batchInfo = batchMatch ? ` (Batch ${batchMatch[1]})` : '';
+    
     folderTree.innerHTML = `
       <div class="loading">
         <div class="spinner"></div>
-        <div>${data.message}</div>
+        <div>AI 正在思考中${batchInfo}...</div>
+        <div style="font-size: 12px; color: #7f8c8d; margin-top: 8px;">${data.message}</div>
       </div>
     `;
   }
 }
 
 function handleClassifyComplete(data) {
+  console.log('[handleClassifyComplete] ========== UI 刷新同步 ==========');
+  console.log('[handleClassifyComplete] 接收到的数据:', data);
   aiClassificationResult = data;
   
   if (data.error) {
+    console.error('[handleClassifyComplete] 分类错误:', data.error);
     folderTree.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">❌</div>
         <div>${escapeHtml(data.error)}</div>
+        <div style="font-size: 12px; color: #95a5a6; margin-top: 8px;">请查看控制台获取详细错误信息</div>
       </div>
     `;
+    // 清除分类结果
+    aiClassificationResult = null;
     resetClassifyButton();
+    // 更新统计（将建议分类设为0）
+    updateStats();
+    console.log('[handleClassifyComplete] 错误处理完成，统计已更新');
     return;
   }
   
-  // 显示目录树预览
-  displayFolderTree(data.folders);
-  resetClassifyButton();
-}
-
-function displayFolderTree(folders) {
-  if (!folders || folders.length === 0) {
+  console.log('[handleClassifyComplete] 分类成功，文件夹数量:', data.folders?.length || 0);
+  console.log('[handleClassifyComplete] 文件夹详情:', data.folders);
+  
+  // 验证数据
+  if (!data.folders || !Array.isArray(data.folders) || data.folders.length === 0) {
+    console.warn('[handleClassifyComplete] 警告：没有分类结果');
     folderTree.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">📁</div>
         <div>AI 未生成分类建议</div>
+        <div style="font-size: 12px; color: #95a5a6; margin-top: 8px;">请检查控制台日志查看详细信息</div>
+      </div>
+    `;
+    // 即使没有结果，也保存结果对象（但 folders 为空数组）
+    aiClassificationResult = data;
+    resetClassifyButton();
+    updateStats();
+    console.log('[handleClassifyComplete] 空结果处理完成，统计已更新');
+    return;
+  }
+  
+  // 显示目录树预览（UI 刷新）
+  console.log('[handleClassifyComplete] 调用 displayFolderTree 渲染结果');
+  displayFolderTree(data.folders);
+  resetClassifyButton();
+  
+  // 更新统计信息（显示 AI 分类的数量）
+  console.log('[handleClassifyComplete] 调用 updateStats 更新统计');
+  updateStats();
+  
+  console.log('[handleClassifyComplete] UI 刷新完成，当前 aiClassificationResult:', aiClassificationResult);
+  console.log('[handleClassifyComplete] ========== UI 刷新同步完成 ==========');
+}
+
+function displayFolderTree(folders) {
+  console.log('[displayFolderTree] 开始渲染目录树，文件夹数量:', folders?.length || 0);
+  
+  if (!folders || folders.length === 0) {
+    console.warn('[displayFolderTree] 文件夹列表为空');
+    folderTree.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">📁</div>
+        <div>AI 未生成分类建议</div>
+        <div style="font-size: 12px; color: #95a5a6; margin-top: 8px;">请检查控制台日志查看详细信息</div>
       </div>
     `;
     return;
   }
   
+  console.log('[displayFolderTree] 清空 folderTree 元素');
   folderTree.innerHTML = '';
   folderTree.className = 'folder-tree tree-view';
   

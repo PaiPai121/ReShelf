@@ -313,6 +313,12 @@
       display: block;
     }
 
+    .api-status.info {
+      background: #d1ecf1;
+      color: #0c5460;
+      display: block;
+    }
+
     .folder-tree {
       max-height: 400px;
       overflow-y: auto;
@@ -429,7 +435,10 @@
           <input type="text" id="apiBaseUrl" class="form-input" placeholder="使用默认 URL（留空）或自定义">
           <small class="form-hint">Gemini 默认: https://generativelanguage.googleapis.com/v1beta<br>智谱 AI 默认: https://open.bigmodel.cn/api/paas/v4</small>
         </div>
-        <button id="saveApiSettings" class="button button-small">💾 保存设置</button>
+        <div style="display: flex; gap: 8px;">
+            <button id="saveApiSettings" class="button button-small" style="flex: 1;">💾 保存设置</button>
+            <button id="testApiConnection" class="button button-small" style="flex: 1;">🔌 测试连接</button>
+        </div>
         <div id="apiStatus" class="api-status"></div>
       </div>
     </div>
@@ -453,7 +462,10 @@
       </div>
       <div class="stat-card">
         <div class="stat-number" id="suggestionCount">0</div>
-        <div class="stat-label">建议分类</div>
+        <div class="stat-label">AI 分类建议</div>
+        <div id="suggestionHint" style="font-size: 11px; color: #7f8c8d; margin-top: 4px; min-height: 14px;">
+            <span id="suggestionHintText">点击"AI 智能分类"按钮生成</span>
+        </div>
       </div>
     </div>
 

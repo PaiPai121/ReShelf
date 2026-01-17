@@ -31,14 +31,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   if (message.type === 'classifyBookmarks') {
+      console.log('[background] 收到 classifyBookmarks 请求');
     classifyBookmarks(message.data).then(result => {
+        console.log('[background] 分类完成，准备发送结果:', {
+            foldersCount: result.folders?.length || 0,
+            totalBookmarks: result.totalBookmarks
+        });
       // 发送结果到 side panel
       chrome.runtime.sendMessage({
         type: 'classifyComplete',
         data: result
-      }).catch(err => console.error('Error sending classification results:', err));
+      }).then(() => {
+          console.log('[background] 分类结果已发送到 side panel');
+      }).catch(err => {
+          console.error('[background] 发送分类结果失败:', err);
+      });
     }).catch(err => {
-      console.error('Classification error:', err);
+        console.error('[background] 分类错误:', err);
       chrome.runtime.sendMessage({
         type: 'classifyComplete',
         data: { error: err.message }
@@ -97,6 +106,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+    if (message.type === 'testApiConnection') {
+        testApiConnection(message.data).then(result => {
+            sendResponse({ status: 'success', message: result.message });
+        }).catch(err => {
+            console.error('Test API connection error:', err);
+            sendResponse({ status: 'error', error: err.message });
+        });
+        return true;
+    }
 });
 
 // 开始扫描书签
@@ -249,12 +268,60 @@ async function classifyWithAI(bookmarks) {
 
 // 新的 AI 分类函数（使用滑动窗口）
 async function classifyBookmarks(data) {
+    console.log('[classifyBookmarks] ========== 开始分类 ==========');
+    console.log('[classifyBookmarks] 接收到的原始数据:', {
+        bookmarksCount: data.bookmarks?.length || 0,
+        apiProvider: data.apiProvider,
+        hasApiKey: !!data.apiKey,
+        apiKeyLength: data.apiKey?.length || 0,
+        apiBaseUrl: data.apiBaseUrl || '使用默认'
+    });
+
   const { bookmarks, apiProvider, apiKey, apiBaseUrl } = data;
+
+    // 1. 数据输入检查 (The Input Gate)
+    console.log('[classifyBookmarks] 待分类原始数据 (前10个):',
+        bookmarks?.slice(0, 10).map(b => ({ id: b.id, title: b.title, url: b.url })) || []
+    );
+
+    // API Key 检查
+    if (!apiKey || apiKey.trim().length === 0) {
+        const errorMsg = 'API Key 为空，请先在设置中配置 API Key';
+        console.error('[classifyBookmarks]', errorMsg);
+        throw new Error(errorMsg);
+    }
+
+    // 数据有效性检查
+    if (!bookmarks || !Array.isArray(bookmarks) || bookmarks.length === 0) {
+        const errorMsg = '未找到可分类的有效书签';
+        console.error('[classifyBookmarks]', errorMsg);
+        throw new Error(errorMsg);
+    }
+
+    // 过滤掉无效书签
+    const validBookmarks = bookmarks.filter(b => b && b.id && b.title && b.url);
+    console.log(`[classifyBookmarks] 原始书签数: ${bookmarks.length}, 有效书签数: ${validBookmarks.length}`);
+
+    if (validBookmarks.length === 0) {
+        const errorMsg = '未找到可分类的有效书签（所有书签都缺少必要字段）';
+        console.error('[classifyBookmarks]', errorMsg);
+        throw new Error(errorMsg);
+    }
+
   const BATCH_SIZE = 20;
   const WINDOW_OVERLAP = 5; // 滑动窗口重叠数量
   const allFolders = [];
   
   try {
+      console.log(`[classifyBookmarks] 准备处理 ${validBookmarks.length} 个有效书签`);
+      console.log('[classifyBookmarks] API 配置:', {
+          provider: apiProvider,
+          hasKey: !!apiKey,
+          keyLength: apiKey.length,
+          keyPreview: apiKey.substring(0, 8) + '...',
+          baseUrl: apiBaseUrl || '默认'
+      });
+
     // 发送进度更新
     sendClassifyProgress('开始分析书签...');
     
@@ -262,16 +329,23 @@ async function classifyBookmarks(data) {
     let processedCount = 0;
     let windowStart = 0;
     
-    while (windowStart < bookmarks.length) {
-      const windowEnd = Math.min(windowStart + BATCH_SIZE, bookmarks.length);
-      const batch = bookmarks.slice(windowStart, windowEnd);
+      while (windowStart < validBookmarks.length) {
+          const windowEnd = Math.min(windowStart + BATCH_SIZE, validBookmarks.length);
+          const batch = validBookmarks.slice(windowStart, windowEnd);
       const batchNumber = Math.floor(windowStart / (BATCH_SIZE - WINDOW_OVERLAP)) + 1;
-      const estimatedBatches = Math.ceil(bookmarks.length / (BATCH_SIZE - WINDOW_OVERLAP));
+          const estimatedBatches = Math.ceil(validBookmarks.length / (BATCH_SIZE - WINDOW_OVERLAP));
       
-      sendClassifyProgress(`正在分析第 ${batchNumber} 批书签 (${windowStart + 1}-${windowEnd}/${bookmarks.length})...`);
+          sendClassifyProgress(`正在分析第 ${batchNumber} 批书签 (${windowStart + 1}-${windowEnd}/${validBookmarks.length})...`);
       
       try {
+          console.log(`[classifyBookmarks] 处理批次 ${batchNumber}/${estimatedBatches}:`, {
+              batchSize: batch.length,
+              windowRange: `${windowStart + 1}-${windowEnd}`,
+              sampleBookmarks: batch.slice(0, 3).map(b => ({ id: b.id, title: b.title }))
+          });
+
         // 调用 AI API
+          console.log(`[classifyBookmarks] 发起 API 请求 (${apiProvider})...`);
         const batchResult = await callAIClassifyAPI(
           batch,
           apiProvider,
@@ -279,8 +353,17 @@ async function classifyBookmarks(data) {
           apiBaseUrl
         );
         
+          console.log(`[classifyBookmarks] API 响应接收:`, {
+              hasResult: !!batchResult,
+              foldersCount: batchResult?.folders?.length || 0,
+              sampleFolders: batchResult?.folders?.slice(0, 2) || []
+          });
+
         if (batchResult && batchResult.folders) {
           allFolders.push(...batchResult.folders);
+            console.log(`[classifyBookmarks] 批次 ${batchNumber} 完成，获得 ${batchResult.folders.length} 个分类建议`);
+        } else {
+            console.warn(`[classifyBookmarks] 批次 ${batchNumber} 未返回有效结果`);
         }
         
         processedCount += batch.length;
@@ -290,11 +373,16 @@ async function classifyBookmarks(data) {
         
         // 频率限制：根据 API 提供商设置不同的延迟
         const delay = apiProvider === 'gemini' ? 1000 : 800; // Gemini 稍慢一些
-        if (windowStart < bookmarks.length) {
+          if (windowStart < validBookmarks.length) {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       } catch (error) {
-        console.error(`批次处理错误 (${windowStart}-${windowEnd}):`, error);
+          console.error(`[classifyBookmarks] 批次处理错误 (${windowStart}-${windowEnd}):`, {
+              error: error.message,
+              stack: error.stack,
+              batchNumber,
+              batchSize: batch.length
+          });
         // 如果单个批次失败，继续处理下一批次
         windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
         // 增加延迟，避免连续失败
@@ -302,29 +390,56 @@ async function classifyBookmarks(data) {
       }
     }
     
+      console.log(`[classifyBookmarks] 所有批次处理完成，共获得 ${allFolders.length} 个分类建议`);
+
+      // 检查是否有任何成功的批次
+      if (allFolders.length === 0) {
+          const errorMsg = '所有批次都失败了，请检查 API 配置和网络连接。如果使用 Gemini API，请确保使用正确的模型名称（gemini-1.5-flash 或 gemini-1.5-pro）。';
+          console.error('[classifyBookmarks]', errorMsg);
+          throw new Error(errorMsg);
+      }
+
     // 合并相同文件夹的建议
+      console.log('[classifyBookmarks] 开始合并文件夹建议...');
     const mergedFolders = mergeFolderSuggestions(allFolders);
+      console.log(`[classifyBookmarks] 合并完成，最终 ${mergedFolders.length} 个分类:`,
+          mergedFolders.map(f => ({ folder: f.folder, count: f.bookmarks?.length || 0 }))
+      );
     
     sendClassifyProgress('分类分析完成！');
     
     return {
       folders: mergedFolders,
-      totalBookmarks: bookmarks.length,
+        totalBookmarks: validBookmarks.length,
       processedCount: processedCount
     };
   } catch (error) {
-    console.error('Classification error:', error);
-    throw error;
+      console.error('[classifyBookmarks] 分类过程发生错误:', {
+          error: error.message,
+          stack: error.stack,
+          bookmarksCount: validBookmarks?.length || 0
+      });
+      throw error;
   }
 }
 
 // 调用 AI API（支持 Gemini 和智谱 AI）
 async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl) {
-  const prompt = buildClassificationPrompt(bookmarks);
+    console.log('[callAIClassifyAPI] ========== API 调用拦截器 ==========');
+    console.log('[callAIClassifyAPI] 开始构建 Prompt...');
+    const prompt = buildClassificationPrompt(bookmarks);
+    console.log('[callAIClassifyAPI] Prompt 长度:', prompt.length, '字符');
+    console.log('[callAIClassifyAPI] Prompt 完整内容:');
+    console.log('--- Prompt Start ---');
+    console.log(prompt);
+    console.log('--- Prompt End ---');
+    console.log('[callAIClassifyAPI] Prompt 预览 (前500字符):', prompt.substring(0, 500));
   
   if (provider === 'gemini') {
+      console.log('[callAIClassifyAPI] 使用 Gemini API');
     return await callGeminiAPI(bookmarks, prompt, apiKey, baseUrl);
   } else if (provider === 'zhipu') {
+      console.log('[callAIClassifyAPI] 使用智谱 AI API');
     return await callZhipuAPI(bookmarks, prompt, apiKey, baseUrl);
   } else {
     throw new Error(`不支持的 API 提供商: ${provider}`);
@@ -353,7 +468,8 @@ ${bookmarksList}
 // 调用 Gemini API
 async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
   // Gemini API 格式: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}
-  const model = 'gemini-pro';
+    // 使用 gemini-flash-latest
+    const model = 'gemini-flash-latest';
   let url;
   
   if (baseUrl && baseUrl.trim()) {
@@ -368,6 +484,15 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
     url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   }
   
+    console.log('[callGeminiAPI] 请求 URL:', url.replace(apiKey, '***'));
+    console.log('[callGeminiAPI] 请求体大小:', JSON.stringify({
+        contents: [{
+            parts: [{
+                text: prompt
+            }]
+        }]
+    }).length, '字节');
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -382,17 +507,42 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
     })
   });
   
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API 错误: ${response.status} - ${errorText}`);
-  }
+    console.log('[callGeminiAPI] 响应状态:', response.status, response.statusText);
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[callGeminiAPI] ========== API 错误响应 ==========');
+        console.error('[callGeminiAPI] 状态码:', response.status);
+        console.error('[callGeminiAPI] 状态文本:', response.statusText);
+        console.error('[callGeminiAPI] 错误响应体:', errorText);
+        console.error('[callGeminiAPI] 可能的原因:');
+        if (response.status === 401 || response.status === 403) {
+            console.error('  - API Key 无效或已过期');
+        } else if (response.status === 429) {
+            console.error('  - API 调用频率超限');
+        } else if (response.status === 402 || response.status === 403) {
+            console.error('  - 账户欠费或配额不足');
+        } else if (response.status >= 500) {
+            console.error('  - 服务器错误，可能是网络问题');
+        }
+        throw new Error(`Gemini API 错误: ${response.status} - ${errorText}`);
+    }
   
   const data = await response.json();
+    console.log('[callGeminiAPI] 响应数据结构:', {
+        hasCandidates: !!data.candidates,
+        candidatesCount: data.candidates?.length || 0,
+        hasContent: !!(data.candidates?.[0]?.content)
+    });
   
   // 提取响应文本
   let responseText = '';
   if (data.candidates && data.candidates[0] && data.candidates[0].content) {
     responseText = data.candidates[0].content.parts[0].text;
+      console.log('[callGeminiAPI] 响应文本长度:', responseText.length, '字符');
+      console.log('[callGeminiAPI] 响应文本预览:', responseText.substring(0, 300));
+  } else {
+      console.warn('[callGeminiAPI] 响应中未找到有效内容:', data);
   }
   
   return parseAIResponse(responseText, bookmarks);
@@ -402,6 +552,22 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
 async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
   const apiUrl = baseUrl || 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
   
+    console.log('[callZhipuAPI] 请求 URL:', apiUrl);
+    console.log('[callZhipuAPI] 请求体大小:', JSON.stringify({
+        model: 'glm-4',
+        messages: [
+            {
+                role: 'system',
+                content: '你是一位资深的图书管理员，擅长对数字资源进行科学分类。请只返回 JSON 格式的响应，不要包含其他文字说明。'
+            },
+            {
+                role: 'user',
+                content: prompt
+            }
+        ],
+        temperature: 0.7
+    }).length, '字节');
+
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
@@ -424,17 +590,42 @@ async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
     })
   });
   
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`智谱 AI API 错误: ${response.status} - ${errorText}`);
-  }
+    console.log('[callZhipuAPI] 响应状态:', response.status, response.statusText);
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[callZhipuAPI] ========== API 错误响应 ==========');
+        console.error('[callZhipuAPI] 状态码:', response.status);
+        console.error('[callZhipuAPI] 状态文本:', response.statusText);
+        console.error('[callZhipuAPI] 错误响应体:', errorText);
+        console.error('[callZhipuAPI] 可能的原因:');
+        if (response.status === 401 || response.status === 403) {
+            console.error('  - API Key 无效或已过期');
+        } else if (response.status === 429) {
+            console.error('  - API 调用频率超限');
+        } else if (response.status === 402 || response.status === 403) {
+            console.error('  - 账户欠费或配额不足');
+        } else if (response.status >= 500) {
+            console.error('  - 服务器错误，可能是网络问题');
+        }
+        throw new Error(`智谱 AI API 错误: ${response.status} - ${errorText}`);
+    }
   
   const data = await response.json();
+    console.log('[callZhipuAPI] 响应数据结构:', {
+        hasChoices: !!data.choices,
+        choicesCount: data.choices?.length || 0,
+        hasMessage: !!(data.choices?.[0]?.message)
+    });
   
   // 提取响应文本
   let responseText = '';
   if (data.choices && data.choices[0] && data.choices[0].message) {
     responseText = data.choices[0].message.content;
+      console.log('[callZhipuAPI] 响应文本长度:', responseText.length, '字符');
+      console.log('[callZhipuAPI] 响应文本预览:', responseText.substring(0, 300));
+  } else {
+      console.warn('[callZhipuAPI] 响应中未找到有效内容:', data);
   }
   
   return parseAIResponse(responseText, bookmarks);
@@ -442,34 +633,64 @@ async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
 
 // 解析 AI 响应（加强错误处理）
 function parseAIResponse(responseText, bookmarks) {
-  let jsonText = responseText.trim();
-  
-  // 方法1: 移除 markdown 代码块标记
+    console.log('[parseAIResponse] ========== 解析器鲁棒性检查 ==========');
+    console.log('[parseAIResponse] 原始文本长度:', responseText?.length || 0);
+
+    if (!responseText || responseText.trim().length === 0) {
+        console.error('[parseAIResponse] 响应文本为空');
+        throw new Error('AI 返回的响应为空');
+    }
+
+    // 保存原始文本用于调试
+    const rawText = responseText.trim();
+    console.log('[parseAIResponse] 原始文本完整内容:');
+    console.log('--- Raw Text Start ---');
+    console.log(rawText);
+    console.log('--- Raw Text End ---');
+    console.log('[parseAIResponse] 原始文本预览 (前500字符):', rawText.substring(0, 500));
+
+    let jsonText = rawText;
+
+    // 方法1: 移除 markdown 代码块标记（支持多种格式）
+    // 处理 ```json ... ``` 格式
   jsonText = jsonText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '');
+    // 处理 ``` ... ``` 格式（没有 json 标记）
+    jsonText = jsonText.replace(/^```\s*/i, '').replace(/\s*```$/i, '');
   jsonText = jsonText.trim();
+    console.log('[parseAIResponse] 移除 markdown 后长度:', jsonText.length);
+    console.log('[parseAIResponse] 移除 markdown 后预览:', jsonText.substring(0, 300));
   
-  // 方法2: 使用正则提取 JSON 数组
+    // 方法2: 使用正则提取 JSON 数组（更宽松的匹配）
   const jsonArrayMatch = jsonText.match(/\[[\s\S]*\]/);
   if (jsonArrayMatch) {
     jsonText = jsonArrayMatch[0];
+      console.log('[parseAIResponse] 使用正则提取 JSON 数组，长度:', jsonText.length);
+  } else {
+      console.warn('[parseAIResponse] 未找到 JSON 数组模式，尝试直接解析');
   }
   
   // 方法3: 尝试修复常见的 JSON 格式问题
   try {
+      console.log('[parseAIResponse] 尝试修复 JSON 格式问题...');
     // 移除可能的注释
     jsonText = jsonText.replace(/\/\/.*$/gm, '');
     // 移除尾随逗号
     jsonText = jsonText.replace(/,(\s*[}\]])/g, '$1');
     
+      console.log('[parseAIResponse] 修复后 JSON 预览:', jsonText.substring(0, 300));
+
     // 解析 JSON
     let folders = JSON.parse(jsonText);
+      console.log('[parseAIResponse] JSON 解析成功，获得', folders.length, '个分类');
     
     if (!Array.isArray(folders)) {
+        console.error('[parseAIResponse] 解析结果不是数组:', typeof folders);
       throw new Error('响应格式错误：期望 JSON 数组');
     }
     
     // 验证和清理数据
     folders = folders.filter(f => f && f.folder && Array.isArray(f.ids));
+      console.log('[parseAIResponse] 验证后有效分类数:', folders.length);
     
     if (folders.length === 0) {
       throw new Error('未找到有效的分类建议');
@@ -477,6 +698,7 @@ function parseAIResponse(responseText, bookmarks) {
     
     // 将 ID 映射到书签对象
     const bookmarkMap = new Map(bookmarks.map(b => [String(b.id), b]));
+      console.log('[parseAIResponse] 书签映射表大小:', bookmarkMap.size);
     
     const result = folders.map(folder => ({
       folder: String(folder.folder).trim(),
@@ -486,11 +708,23 @@ function parseAIResponse(responseText, bookmarks) {
         .filter(b => b !== undefined)
     })).filter(f => f.bookmarks.length > 0); // 只保留有书签的分类
     
-    if (result.length === 0) {
-      throw new Error('所有分类建议中的书签 ID 都不匹配');
-    }
-    
-    return { folders: result };
+      console.log('[parseAIResponse] 最终结果:', {
+          totalFolders: result.length,
+          folders: result.map(f => ({ folder: f.folder, count: f.bookmarks.length }))
+      });
+
+      if (result.length === 0) {
+          console.error('[parseAIResponse] ========== 解析结果为空 ==========');
+          console.error('[parseAIResponse] 原始文本:', rawText);
+          console.error('[parseAIResponse] 清理后文本:', jsonText);
+          console.error('[parseAIResponse] 解析的文件夹数:', folders.length);
+          console.error('[parseAIResponse] 验证后文件夹数:', folders.filter(f => f && f.folder && Array.isArray(f.ids)).length);
+          console.error('[parseAIResponse] 书签映射表大小:', bookmarkMap.size);
+          throw new Error('所有分类建议中的书签 ID 都不匹配。原始响应已打印到控制台。');
+      }
+
+      console.log('[parseAIResponse] ========== 解析成功 ==========');
+      return { folders: result };
   } catch (error) {
     console.error('解析 AI 响应失败:', error);
     console.error('原始响应:', responseText.substring(0, 500));
@@ -571,6 +805,105 @@ function sendClassifyProgress(message) {
     type: 'classifyProgress',
     data: { message }
   }).catch(() => {}); // 忽略错误
+}
+
+// 测试 API 连接
+async function testApiConnection(data) {
+    const { apiProvider, apiKey, apiBaseUrl } = data;
+
+    console.log('[testApiConnection] 开始测试 API 连接:', {
+        provider: apiProvider,
+        hasKey: !!apiKey,
+        keyLength: apiKey?.length || 0,
+        baseUrl: apiBaseUrl || '默认'
+    });
+
+    try {
+        const testPrompt = 'Hi';
+        let response;
+
+        if (apiProvider === 'gemini') {
+            const model = 'gemini-flash-latest';
+            let url;
+
+            if (apiBaseUrl && apiBaseUrl.trim()) {
+                url = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+                if (!url.includes('models/')) {
+                    url = `${url}/models/${model}:generateContent`;
+                }
+                url = `${url}?key=${apiKey}`;
+            } else {
+                url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+            }
+
+            console.log('[testApiConnection] Gemini 测试 URL:', url.replace(apiKey, '***'));
+
+            response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{
+                            text: testPrompt
+                        }]
+                    }]
+                })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[testApiConnection] Gemini API 错误:', response.status, errorText);
+                throw new Error(`Gemini API 错误 (${response.status}): ${errorText.substring(0, 200)}`);
+            }
+
+            const data = await response.json();
+            console.log('[testApiConnection] Gemini 响应成功:', !!data.candidates);
+
+        } else if (apiProvider === 'zhipu') {
+            const apiUrl = apiBaseUrl || 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+
+            console.log('[testApiConnection] 智谱 AI 测试 URL:', apiUrl);
+
+            response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'glm-4',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: testPrompt
+                        }
+                    ],
+                    temperature: 0.7
+                })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[testApiConnection] 智谱 AI API 错误:', response.status, errorText);
+                throw new Error(`智谱 AI API 错误 (${response.status}): ${errorText.substring(0, 200)}`);
+            }
+
+            const data = await response.json();
+            console.log('[testApiConnection] 智谱 AI 响应成功:', !!data.choices);
+
+        } else {
+            throw new Error(`不支持的 API 提供商: ${apiProvider}`);
+        }
+
+        console.log('[testApiConnection] API 连接测试成功');
+        return { message: 'API 连接测试成功！' };
+
+    } catch (error) {
+        console.error('[testApiConnection] 测试失败:', error);
+        throw error;
+    }
 }
 
 // 重构书签
