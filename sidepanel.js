@@ -135,21 +135,36 @@ function updateProgress(data) {
   // console.log('Scan progress:', data); // 减少日志输出
 }
 
-// 处理扫描完成
 function handleScanComplete(data) {
+  // 1. 保存扫描结果
   scanResults = data;
   
-  // 计算存活的书签（排除失效和重复的）
+  // 2. 核心：立即恢复扫描按钮的可点击状态
+  // 这会执行 scanBtn.disabled = false，解决“点不动”的问题
+  resetScanButton();
+  
+  // 3. 更新界面列表，移除“检测中...”的加载动画
+  updateBrokenList(data.broken);
+  updateDuplicateList(data.duplicates);
+  updateSuggestionList(data.suggestions);
+  
+  // 4. 更新统计数据
+  updateStats();
+
+  // 5. 开启“一键重构”按钮（如果有待处理项）
+  if (data.broken.length > 0 || data.duplicates.length > 0 || data.suggestions.length > 0) {
+    restructureBtn.disabled = false;
+  }
+
+  // 6. 处理存活书签并显示 AI 分类入口
   const brokenIds = new Set(data.broken.map(b => b.id));
   const duplicateIds = new Set();
   data.duplicates.forEach(group => {
-    // 保留第一个，标记其余为重复
     for (let i = 1; i < group.length; i++) {
       duplicateIds.add(group[i].id);
     }
   });
   
-  // 获取所有书签，过滤出存活的
   chrome.bookmarks.getTree((tree) => {
     const allBookmarks = flattenBookmarkTree(tree);
     validBookmarks = allBookmarks.filter(b => 
@@ -158,7 +173,7 @@ function handleScanComplete(data) {
       !duplicateIds.has(b.id)
     );
     
-      // 如果有存活的书签，显示 AI 分类区域
+    // 如果有有效书签，展示 AI 分类区域
     if (validBookmarks.length > 0) {
         const aiClassifySection = document.getElementById('aiClassifySection');
         if (aiClassifySection) {
@@ -166,21 +181,6 @@ function handleScanComplete(data) {
         }
     }
   });
-  
-  // 更新列表
-  updateBrokenList(data.broken);
-  updateDuplicateList(data.duplicates);
-  updateSuggestionList(data.suggestions);
-  
-  // 更新统计（注意：不要覆盖已有的 AI 分类结果）
-  updateStats();
-  
-  // 启用重构按钮
-  if (data.broken.length > 0 || data.duplicates.length > 0 || data.suggestions.length > 0) {
-    restructureBtn.disabled = false;
-  }
-  
-  resetScanButton();
 }
 
 // 扁平化书签树（用于获取所有书签）
@@ -551,29 +551,18 @@ async function startAIClassification() {
     return;
   }
   
-  let bookmarksToClassify = [];
+// 2. 直接获取最新的原始书签数据（不依赖扫描结果）
+  // 这样保证了数据的纯净和格式的统一
+  let bookmarksToClassify = await getRawBookmarksDirectly();
 
-  // 2. 核心逻辑：自动获取数据
-  if (validBookmarks && validBookmarks.length > 0) {
-    // 情况 A：已经扫描过了，使用扫描后的存活书签
-    bookmarksToClassify = validBookmarks;
-    console.log('[ReShelf] 使用已扫描的存活书签进行分类');
-  } else {
-    // 情况 B：未扫描，直接从浏览器数据库抓取
-    console.log('[ReShelf] 未检测到扫描数据，正在直接读取书签库...');
-    const all = await getRawBookmarksDirectly(); // 调用之前添加的直接获取函数
-    bookmarksToClassify = all;
-  }
-
-  // 3. 调试模式截断：如果开启了调试，只取前 20 条
+  // 3. 调试模式：截取前 20 条
   if (isDebug) {
-    console.log('[Debug Mode] 仅处理前 20 条测试数据');
+    console.log('[Debug] 仅处理前 20 条书签');
     bookmarksToClassify = bookmarksToClassify.slice(0, 20);
   }
 
-  // 4. 空数据检查
   if (bookmarksToClassify.length === 0) {
-    alert('未找到任何可分类的书签。');
+    alert('书签库为空，无需整理');
     return;
   }
 
@@ -950,4 +939,75 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// sidepanel.js
+
+const importBackupBtn = document.getElementById('importBackupBtn');
+const restoreFile = document.getElementById('restoreFile');
+
+// 当点击“恢复”按钮时，模拟点击那个隐藏的文件选择器
+importBackupBtn.addEventListener('click', () => restoreFile.click());
+
+// 当您选好了文件后，开始执行读取
+restoreFile.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const htmlContent = event.target.result;
+    // 调用解析工具，把 HTML 文本变成书签列表
+    const bookmarkTree = parseBookmarkHTML(htmlContent);
+    
+    if (confirm(`准备恢复 ${countBookmarks(bookmarkTree)} 个书签，是否确认？`)) {
+      chrome.runtime.sendMessage({
+        type: 'restoreBookmarks',
+        data: bookmarkTree
+      }, (response) => {
+        if (response.status === 'success') {
+          alert('恢复成功！');
+          location.reload(); // 刷新一下看到新书签
+        }
+      });
+    }
+  };
+  reader.readAsText(file);
+});
+
+// 解析逻辑：就像是在读一份菜单，寻找 <h3>（文件夹）和 <a>（链接）
+function parseBookmarkHTML(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const rootDl = doc.querySelector('dl');
+  
+  function traverse(dlElement) {
+    const items = [];
+    const dts = Array.from(dlElement.children).filter(el => el.tagName === 'DT');
+    for (const dt of dts) {
+      const h3 = dt.querySelector('h3'); // 发现文件夹
+      const a = dt.querySelector('a');   // 发现链接
+      if (h3) {
+        const nextDl = dt.querySelector('dl') || dt.nextElementSibling;
+        items.push({
+          title: h3.textContent,
+          children: nextDl && nextDl.tagName === 'DL' ? traverse(nextDl) : []
+        });
+      } else if (a) {
+        items.push({ title: a.textContent, url: a.href });
+      }
+    }
+    return items;
+  }
+  return rootDl ? traverse(rootDl) : [];
+}
+
+// 数一数一共多少个书签的辅助小工具
+function countBookmarks(nodes) {
+  let count = 0;
+  nodes.forEach(node => {
+    if (node.url) count++;
+    if (node.children) count += countBookmarks(node.children);
+  });
+  return count;
 }

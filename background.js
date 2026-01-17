@@ -116,6 +116,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return true;
     }
+    // background.js 里的消息监听部分
+
+    if (message.type === 'restoreBookmarks') {
+      // 执行递归创建逻辑
+      executeRestore(message.data).then(() => {
+        sendResponse({ status: 'success' });
+      }).catch(err => {
+        sendResponse({ status: 'error', error: err.message });
+      });
+      return true;
+    }
+    async function executeRestore(nodes, parentId = null) {
+      if (!parentId) {
+        const tree = await chrome.bookmarks.getTree();
+        // 默认恢复到书签栏 (ID 1)
+        parentId = tree[0].children[0].id; 
+      }
+    
+      for (const node of nodes) {
+        try {
+          if (node.url) {
+            await chrome.bookmarks.create({
+              parentId: parentId,
+              title: node.title,
+              url: node.url
+            });
+          } else if (node.children) {
+            // 创建原有的文件夹结构
+            const newFolder = await chrome.bookmarks.create({
+              parentId: parentId,
+              title: node.title
+            });
+            // 递归进入下一层
+            await executeRestore(node.children, newFolder.id);
+          }
+        } catch (e) {
+          console.error(`恢复节点 ${node.title} 失败:`, e);
+          // 遇到个别错误继续执行，不中断整个过程
+        }
+      }
+    }
 });
 
 // 开始扫描书签
@@ -1254,13 +1295,10 @@ async function findOrCreateFolder(folderName) {
   
   return newFolder;
 }
-
 async function findOrCreateFolderPath(folderPath) {
   const tree = await chrome.bookmarks.getTree();
-  // tree[0] 是不可见的根，tree[0].children[0] 是书签栏，tree[0].children[1] 是其他收藏夹
-  // 我们默认将 AI 分类结果放在 "其他收藏夹" (Other Bookmarks) 下
-  const otherBookmarks = tree[0].children[1] || tree[0].children[0];
-  const rootId = otherBookmarks.id; 
+  // tree[0].children[0] 通常就是你的“书签栏”
+  const rootId = tree[0].children[0].id; 
   
   const parts = folderPath.split('/').filter(p => p.trim());
   let currentParentId = rootId;

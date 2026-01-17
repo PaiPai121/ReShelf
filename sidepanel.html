@@ -486,7 +486,11 @@
 
     <div style="display: flex; gap: 12px; margin-bottom: 16px;">
       <button id="scanBtn" class="button" style="flex: 1;">🔍 扫描书签</button>
-      <button id="exportBackupBtn" class="button button-secondary" style="flex: 1;">💾 导出备份</button>
+      <div style="display: flex; flex: 1; gap: 4px;">
+        <button id="exportBackupBtn" class="button button-secondary" style="flex: 1; padding: 12px 8px;">💾 导出</button>
+        <button id="importBackupBtn" class="button button-secondary" style="flex: 1; padding: 12px 8px;">📂 恢复</button>
+        <input type="file" id="restoreFile" style="display: none;" accept=".html">
+      </div>
     </div>
     <!-- AI 分类控制区 -->
     <div id="aiClassifySection" style="margin-bottom: 16px;">
