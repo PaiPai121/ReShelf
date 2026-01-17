@@ -390,13 +390,17 @@ async function classifyBookmarks(data) {
           sendClassifyProgress('🚫 分类已中止');
           return; // 直接跳出整个异步函数
       }
+      // 2. 【心脏起搏器】每批次触发一次心跳，防止 Service Worker 休眠
+    await new Promise(resolve => chrome.runtime.getPlatformInfo(() => resolve()));
           const windowEnd = Math.min(windowStart + BATCH_SIZE, validBookmarks.length);
           const batch = validBookmarks.slice(windowStart, windowEnd);
       const batchNumber = Math.floor(windowStart / (BATCH_SIZE - WINDOW_OVERLAP)) + 1;
           const estimatedBatches = Math.ceil(validBookmarks.length / (BATCH_SIZE - WINDOW_OVERLAP));
       
           sendClassifyProgress(`正在分析第 ${batchNumber} 批书签 (${windowStart + 1}-${windowEnd}/${validBookmarks.length})...`);
-      
+      // 3. 【超时控制】初始化控制器
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 设置 1.5 分钟超时
       try {
           console.log(`[classifyBookmarks] 处理批次 ${batchNumber}/${estimatedBatches}:`, {
               batchSize: batch.length,
@@ -414,9 +418,10 @@ async function classifyBookmarks(data) {
           apiKey,
             apiBaseUrl,
             existingFolderNames,
-            aggregationLevel
+            aggregationLevel,
+            controller.signal // 必须确保 callAIClassifyAPI 内部的 fetch 使用了此 signal
         );
-        
+        clearTimeout(timeoutId); // 成功响应后清除定时器
           console.log(`[classifyBookmarks] API 响应接收:`, {
               hasResult: !!batchResult,
               foldersCount: batchResult?.folders?.length || 0,
