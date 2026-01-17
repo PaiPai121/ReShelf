@@ -311,6 +311,11 @@ async function classifyBookmarks(data) {
   const BATCH_SIZE = 20;
   const WINDOW_OVERLAP = 5; // 滑动窗口重叠数量
   const allFolders = [];
+    const aggregationLevel = data.aggregationLevel || 'medium'; // 聚合度：low, medium, high
+
+    // 批处理一致性：维护已生成的文件夹名称映射表
+    const folderNameMap = new Map(); // 用于存储和复用文件夹名称
+    const existingFolderNames = []; // 已存在的文件夹名称列表
   
   try {
       console.log(`[classifyBookmarks] 准备处理 ${validBookmarks.length} 个有效书签`);
@@ -319,7 +324,8 @@ async function classifyBookmarks(data) {
           hasKey: !!apiKey,
           keyLength: apiKey.length,
           keyPreview: apiKey.substring(0, 8) + '...',
-          baseUrl: apiBaseUrl || '默认'
+          baseUrl: apiBaseUrl || '默认',
+          aggregationLevel: aggregationLevel
       });
 
     // 发送进度更新
@@ -344,13 +350,16 @@ async function classifyBookmarks(data) {
               sampleBookmarks: batch.slice(0, 3).map(b => ({ id: b.id, title: b.title }))
           });
 
-        // 调用 AI API
+          // 调用 AI API（传入已有文件夹名称以保持一致性）
           console.log(`[classifyBookmarks] 发起 API 请求 (${apiProvider})...`);
+          console.log(`[classifyBookmarks] 当前已有文件夹名称:`, existingFolderNames);
         const batchResult = await callAIClassifyAPI(
           batch,
           apiProvider,
           apiKey,
-          apiBaseUrl
+            apiBaseUrl,
+            existingFolderNames,
+            aggregationLevel
         );
         
           console.log(`[classifyBookmarks] API 响应接收:`, {
@@ -360,8 +369,23 @@ async function classifyBookmarks(data) {
           });
 
         if (batchResult && batchResult.folders) {
+            // 更新文件夹名称映射表（用于后续批次的一致性）
+            batchResult.folders.forEach(folder => {
+                const folderName = folder.folder;
+                if (!existingFolderNames.includes(folderName)) {
+                    existingFolderNames.push(folderName);
+                }
+                // 提取大类名称（第一层）
+                const topLevel = folderName.split('/')[0];
+                if (!folderNameMap.has(topLevel)) {
+                    folderNameMap.set(topLevel, []);
+                }
+                folderNameMap.get(topLevel).push(folderName);
+            });
+
           allFolders.push(...batchResult.folders);
             console.log(`[classifyBookmarks] 批次 ${batchNumber} 完成，获得 ${batchResult.folders.length} 个分类建议`);
+            console.log(`[classifyBookmarks] 当前累计文件夹数: ${existingFolderNames.length}`);
         } else {
             console.warn(`[classifyBookmarks] 批次 ${batchNumber} 未返回有效结果`);
         }
@@ -383,6 +407,23 @@ async function classifyBookmarks(data) {
               batchNumber,
               batchSize: batch.length
           });
+
+          // 检查是否是余额不足错误，如果是则立即停止
+          if (error.message.includes('余额不足') ||
+              error.message.includes('无可用资源包') ||
+              error.message.includes('请充值') ||
+              error.message.includes('免费额度已用完')) {
+              console.error('[classifyBookmarks] 检测到余额不足错误，停止处理');
+              throw error; // 抛出错误，让上层处理
+          }
+
+          // 如果是 429 错误（频率限制），使用指数退避重试
+          if (error.message.includes('429') || error.message.includes('频率超限')) {
+              const retryDelay = Math.min(2000 * Math.pow(2, batchNumber % 3), 10000); // 最多等待10秒
+              console.log(`[classifyBookmarks] 429 错误，等待 ${retryDelay}ms 后继续...`);
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
+          }
+
         // 如果单个批次失败，继续处理下一批次
         windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
         // 增加延迟，避免连续失败
@@ -401,8 +442,12 @@ async function classifyBookmarks(data) {
 
     // 合并相同文件夹的建议
       console.log('[classifyBookmarks] 开始合并文件夹建议...');
-    const mergedFolders = mergeFolderSuggestions(allFolders);
-      console.log(`[classifyBookmarks] 合并完成，最终 ${mergedFolders.length} 个分类:`,
+      let mergedFolders = mergeFolderSuggestions(allFolders);
+      console.log(`[classifyBookmarks] 初步合并完成，${mergedFolders.length} 个分类`);
+
+      // 根据聚合度进行后处理
+      mergedFolders = applyAggregationRules(mergedFolders, aggregationLevel);
+      console.log(`[classifyBookmarks] 聚合规则应用完成，最终 ${mergedFolders.length} 个分类:`,
           mergedFolders.map(f => ({ folder: f.folder, count: f.bookmarks?.length || 0 }))
       );
     
@@ -424,10 +469,10 @@ async function classifyBookmarks(data) {
 }
 
 // 调用 AI API（支持 Gemini 和智谱 AI）
-async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl) {
+async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingFolders = [], aggregationLevel = 'medium') {
     console.log('[callAIClassifyAPI] ========== API 调用拦截器 ==========');
     console.log('[callAIClassifyAPI] 开始构建 Prompt...');
-    const prompt = buildClassificationPrompt(bookmarks);
+    const prompt = buildClassificationPrompt(bookmarks, existingFolders, aggregationLevel);
     console.log('[callAIClassifyAPI] Prompt 长度:', prompt.length, '字符');
     console.log('[callAIClassifyAPI] Prompt 完整内容:');
     console.log('--- Prompt Start ---');
@@ -446,18 +491,142 @@ async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl) {
   }
 }
 
-// 构建分类提示词（优化版：强调只返回 JSON）
-function buildClassificationPrompt(bookmarks) {
+// 应用聚合规则（后处理）
+function applyAggregationRules(folders, aggregationLevel) {
+    console.log('[applyAggregationRules] 开始应用聚合规则，级别:', aggregationLevel);
+
+    // 1. 处理孤儿节点（只有一个书签的文件夹）
+    const foldersToMerge = [];
+    const validFolders = [];
+
+    folders.forEach(folder => {
+        const bookmarkCount = folder.bookmarks ? folder.bookmarks.length : 0;
+        if (bookmarkCount === 1) {
+            console.log(`[applyAggregationRules] 发现孤儿节点: ${folder.folder} (1个书签)`);
+            foldersToMerge.push(folder);
+        } else {
+            validFolders.push(folder);
+        }
+    });
+
+    // 将孤儿节点合并到父类或"其他"
+    foldersToMerge.forEach(orphan => {
+        const parts = orphan.folder.split('/');
+        if (parts.length > 1) {
+            // 有父类，合并到父类
+            const parentPath = parts.slice(0, -1).join('/');
+            const parentFolder = validFolders.find(f => f.folder === parentPath);
+            if (parentFolder) {
+                console.log(`[applyAggregationRules] 将 ${orphan.folder} 合并到父类 ${parentPath}`);
+                parentFolder.bookmarks = parentFolder.bookmarks || [];
+                parentFolder.bookmarks.push(...(orphan.bookmarks || []));
+            } else {
+                // 找不到父类，合并到"其他"
+                let otherFolder = validFolders.find(f => f.folder.endsWith('/其他') || f.folder === '其他');
+                if (!otherFolder) {
+                    const topLevel = parts[0];
+                    otherFolder = {
+                        folder: `${topLevel}/其他`,
+                        bookmarks: []
+                    };
+                    validFolders.push(otherFolder);
+                }
+                console.log(`[applyAggregationRules] 将 ${orphan.folder} 合并到 ${otherFolder.folder}`);
+                otherFolder.bookmarks.push(...(orphan.bookmarks || []));
+            }
+        } else {
+            // 单层，合并到"其他"
+            let otherFolder = validFolders.find(f => f.folder === '其他');
+            if (!otherFolder) {
+                otherFolder = {
+                    folder: '其他',
+                    bookmarks: []
+                };
+                validFolders.push(otherFolder);
+            }
+            console.log(`[applyAggregationRules] 将 ${orphan.folder} 合并到 其他`);
+            otherFolder.bookmarks.push(...(orphan.bookmarks || []));
+        }
+    });
+
+    // 2. 处理少于3个书签的文件夹（根据聚合度）
+    if (aggregationLevel !== 'low') {
+        const smallFolders = validFolders.filter(f => {
+            const count = f.bookmarks ? f.bookmarks.length : 0;
+            return count > 0 && count < 3;
+        });
+
+        smallFolders.forEach(smallFolder => {
+            const parts = smallFolder.folder.split('/');
+            if (parts.length > 1) {
+                // 合并到父类
+                const parentPath = parts.slice(0, -1).join('/');
+                const parentFolder = validFolders.find(f => f.folder === parentPath && f !== smallFolder);
+                if (parentFolder) {
+                    console.log(`[applyAggregationRules] 将小文件夹 ${smallFolder.folder} (${smallFolder.bookmarks.length}个) 合并到父类 ${parentPath}`);
+                    parentFolder.bookmarks = parentFolder.bookmarks || [];
+                    parentFolder.bookmarks.push(...(smallFolder.bookmarks || []));
+                    // 标记为待删除
+                    smallFolder._toRemove = true;
+                }
+            }
+        });
+
+        // 移除标记的文件夹
+        return validFolders.filter(f => !f._toRemove);
+    }
+
+    return validFolders;
+}
+
+// 构建分类提示词（优化版：增加硬约束）
+function buildClassificationPrompt(bookmarks, existingFolders = [], aggregationLevel = 'medium') {
   const bookmarksList = bookmarks.map((b, index) => 
     `${index + 1}. 标题: "${b.title}", URL: ${b.url}, ID: ${b.id}`
   ).join('\n');
   
+    // 聚合度提示
+    let aggregationHint = '';
+    if (aggregationLevel === 'high') {
+        aggregationHint = '重要：使用高度聚合策略，只创建 5-10 个核心大类（如：编程开发、设计素材、学术论文、影音娱乐、工具软件、新闻资讯、社交网络、其他）。';
+    } else if (aggregationLevel === 'low') {
+        aggregationHint = '可以使用较精细的分类，但必须遵守以下约束。';
+    } else {
+        aggregationHint = '使用中等聚合度，平衡精细度和可管理性。';
+    }
+
+    // 已有文件夹名称（用于一致性）
+    let existingFoldersHint = '';
+    if (existingFolders.length > 0) {
+        const folderNames = existingFolders.map(f => f.folder).join('、');
+        existingFoldersHint = `\n已有文件夹参考（请尽量复用这些名称）：${folderNames}\n`;
+    }
+
   return `你是资深数字图书管理员。根据书签的标题和URL推断所属领域，建议层级分明的文件夹结构。
 
-要求：
-- 分类合理、有意义，便于查找
-- 支持多级分类（用 "/" 分隔，如 "编程/算法"、"设计/UI/工具"）
-- 每个分类包含相关的书签
+${aggregationHint}
+
+硬约束（必须严格遵守）：
+1. 合并准则：如果某个特定主题的书签少于 3 个，必须将其向上合并到更通用的父文件夹中。
+   - 例如：不要创建"React 钩子"和"React 路由"，统一归类为"前端/React"
+   - 例如：不要创建"Python 爬虫"和"Python 数据分析"，统一归类为"编程/Python"
+
+2. 大类优先：优先使用宽泛且专业的术语。
+   - 推荐大类：编程开发、设计素材、学术论文、影音娱乐、工具软件、新闻资讯、社交网络、学习资源、工作相关、生活服务、其他
+   - 避免过于细分的小类
+
+3. 深度限制：严禁生成超过 3 层的嵌套目录。
+   - 最多格式：大类/中类/小类（如："编程/前端/React"）
+   - 推荐格式：大类/中类（如："编程/前端"）或单层（如："编程"）
+
+4. 孤儿节点处理：严禁出现只有一个书签的文件夹。
+   - 如果某个分类只有一个书签，必须将其合并到父类或"其他"文件夹
+   - 无法合并的，放入该大类下的"其他"或"未分类"文件夹
+
+5. 文件夹命名一致性：
+   - 使用简洁、通用的中文名称
+   - 避免使用英文缩写（除非是通用术语如"AI"、"UI"）
+   - 保持命名风格统一${existingFoldersHint}
 
 书签列表：
 ${bookmarksList}
@@ -598,17 +767,38 @@ async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
         console.error('[callZhipuAPI] 状态码:', response.status);
         console.error('[callZhipuAPI] 状态文本:', response.statusText);
         console.error('[callZhipuAPI] 错误响应体:', errorText);
+
+        // 解析错误信息
+        let errorMessage = `智谱 AI API 错误: ${response.status}`;
+        try {
+            const errorData = JSON.parse(errorText);
+            if (errorData.error) {
+                errorMessage = errorData.error.message || errorMessage;
+                // 检查是否是余额不足
+                if (errorData.error.message && (
+                    errorData.error.message.includes('余额不足') ||
+                    errorData.error.message.includes('无可用资源包') ||
+                    errorData.error.message.includes('请充值')
+                )) {
+                    errorMessage = '智谱 AI 免费额度已用完，请充值或切换到 Gemini API';
+                }
+            }
+        } catch (e) {
+            errorMessage = `${errorMessage} - ${errorText}`;
+        }
+
         console.error('[callZhipuAPI] 可能的原因:');
         if (response.status === 401 || response.status === 403) {
             console.error('  - API Key 无效或已过期');
         } else if (response.status === 429) {
-            console.error('  - API 调用频率超限');
+            console.error('  - API 调用频率超限或余额不足');
+            console.error('  - 建议：切换到 Gemini API或减少批次大小');
         } else if (response.status === 402 || response.status === 403) {
             console.error('  - 账户欠费或配额不足');
         } else if (response.status >= 500) {
             console.error('  - 服务器错误，可能是网络问题');
         }
-        throw new Error(`智谱 AI API 错误: ${response.status} - ${errorText}`);
+        throw new Error(errorMessage);
     }
   
   const data = await response.json();

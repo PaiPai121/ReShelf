@@ -403,6 +403,37 @@
       font-size: 11px;
       margin-left: 8px;
     }
+
+    .slider {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #e0e0e0;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      cursor: pointer;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    .slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
   </style>
 </head>
 <body>
@@ -422,9 +453,12 @@
         <div class="form-group">
           <label for="apiProvider">API 提供商</label>
           <select id="apiProvider" class="form-input">
-            <option value="gemini">Google Gemini</option>
-            <option value="zhipu">智谱 AI (GLM)</option>
+            <option value="gemini">Google Gemini </option>
+            <option value="zhipu">智谱 AI (GLM) - 需要充值</option>
           </select>
+        <small class="form-hint" style="margin-top: 4px; display: block;">
+            💡 提示：Gemini 提供免费额度，智谱 AI 需要充值。如果遇到余额不足，请切换到 Gemini。
+        </small>
         </div>
         <div class="form-group">
           <label for="apiKey">API Key</label>
@@ -447,7 +481,25 @@
       <button id="scanBtn" class="button" style="flex: 1;">🔍 扫描书签</button>
       <button id="exportBackupBtn" class="button button-secondary" style="flex: 1;">💾 导出备份</button>
     </div>
-    <button id="classifyBtn" class="button button-ai" style="display: none; width: 100%;">🤖 AI 智能分类</button>
+    <!-- AI 分类控制区 -->
+    <div id="aiClassifySection" style="display: none; margin-bottom: 16px;">
+        <div class="section" style="padding: 16px;">
+            <div class="form-group" style="margin-bottom: 12px;">
+                <label for="aggregationLevel" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>聚合度</span>
+                    <span id="aggregationLevelLabel" style="font-size: 12px; color: #667eea; font-weight: 600;">中等</span>
+                </label>
+                <input type="range" id="aggregationLevel" min="0" max="2" value="1" step="1" class="slider">
+                <div
+                    style="display: flex; justify-content: space-between; font-size: 11px; color: #7f8c8d; margin-top: 4px;">
+                    <span>低（精细分类）</span>
+                    <span>中（平衡）</span>
+                    <span>高（大类聚合）</span>
+                </div>
+            </div>
+            <button id="classifyBtn" class="button button-ai" style="width: 100%;">🤖 AI 智能分类</button>
+        </div>
+    </div>
 
     <div id="stats" class="stats" style="display: none;">
       <div class="stat-card">

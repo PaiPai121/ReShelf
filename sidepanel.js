@@ -85,6 +85,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   const testApiConnection = document.getElementById('testApiConnection');
   testApiConnection.addEventListener('click', testApiConnectionHandler);
 
+    // 聚合度滑块
+    const aggregationSlider = document.getElementById('aggregationLevel');
+    const aggregationLevelLabel = document.getElementById('aggregationLevelLabel');
+    if (aggregationSlider && aggregationLevelLabel) {
+        aggregationSlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            const labels = ['低（精细分类）', '中（平衡）', '高（大类聚合）'];
+            aggregationLevelLabel.textContent = labels[value];
+        });
+    }
+
   // AI 预览相关事件
   confirmOrganizeBtn.addEventListener('click', confirmOrganize);
   cancelOrganizeBtn.addEventListener('click', cancelOrganize);
@@ -147,9 +158,12 @@ function handleScanComplete(data) {
       !duplicateIds.has(b.id)
     );
     
-    // 如果有存活的书签，显示 AI 分类按钮
+      // 如果有存活的书签，显示 AI 分类区域
     if (validBookmarks.length > 0) {
-      classifyBtn.style.display = 'block';
+        const aiClassifySection = document.getElementById('aiClassifySection');
+        if (aiClassifySection) {
+            aiClassifySection.style.display = 'block';
+        }
     }
   });
   
@@ -533,7 +547,12 @@ async function startAIClassification() {
     return;
   }
   
-  console.log('[startAIClassification] 开始分类，有效书签数:', validBookmarks.length);
+    // 获取聚合度设置
+    const aggregationSlider = document.getElementById('aggregationLevel');
+    const aggregationValue = aggregationSlider ? parseInt(aggregationSlider.value) : 1;
+    const aggregationLevel = aggregationValue === 0 ? 'low' : (aggregationValue === 2 ? 'high' : 'medium');
+
+    console.log('[startAIClassification] 开始分类，有效书签数:', validBookmarks.length, '聚合度:', aggregationLevel);
   
   classifyBtn.disabled = true;
   classifyBtn.textContent = 'AI 分析中...';
@@ -555,7 +574,8 @@ async function startAIClassification() {
       bookmarks: validBookmarks,
       apiProvider: result.apiProvider || 'gemini',
       apiKey: result.apiKey,
-      apiBaseUrl: result.apiBaseUrl || ''
+        apiBaseUrl: result.apiBaseUrl || '',
+        aggregationLevel: aggregationLevel
     }
   }, (response) => {
     if (chrome.runtime.lastError) {
@@ -595,13 +615,35 @@ function handleClassifyComplete(data) {
   
   if (data.error) {
     console.error('[handleClassifyComplete] 分类错误:', data.error);
-    folderTree.innerHTML = `
+
+      // 检查是否是余额不足错误
+      const isBalanceError = data.error.includes('余额不足') ||
+          data.error.includes('无可用资源包') ||
+          data.error.includes('请充值');
+
+      let errorHtml = `
       <div class="empty-state">
         <div class="empty-state-icon">❌</div>
         <div>${escapeHtml(data.error)}</div>
-        <div style="font-size: 12px; color: #95a5a6; margin-top: 8px;">请查看控制台获取详细错误信息</div>
-      </div>
     `;
+
+      if (isBalanceError) {
+          errorHtml += `
+        <div style="font-size: 12px; color: #e74c3c; margin-top: 12px; padding: 12px; background: #fee; border-radius: 6px;">
+          <strong>💡 解决方案：</strong><br>
+          1. 切换到 Gemini API<br>
+          2. 或在 API 设置中选择"Google Gemini"<br>
+          3. 获取 Gemini API Key: <a href="https://makersuite.google.com/app/apikey" target="_blank" style="color: #667eea;">点击这里</a>
+        </div>
+      `;
+      } else {
+          errorHtml += `
+        <div style="font-size: 12px; color: #95a5a6; margin-top: 8px;">请查看控制台获取详细错误信息</div>
+      `;
+      }
+
+      errorHtml += `</div>`;
+      folderTree.innerHTML = errorHtml;
     // 清除分类结果
     aiClassificationResult = null;
     resetClassifyButton();
