@@ -5,9 +5,14 @@
 chrome.runtime.onInstalled.addListener(() => {
   console.log('ReShelf extension installed');
 });
-
+let isAbortRequested = false;
 // 监听来自 side panel 的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('[background] 收到消息类型:', message.type); // 确保这一行在最前面
+  if (message.type === 'stopClassification') {
+    isAbortRequested = true;
+    console.log('[background] 收到停止信号，正在拦截后续批次...');
+  }
   if (message.type === 'startScan') {
     startBookmarkScan().then(results => {
       // 发送结果到 side panel
@@ -47,12 +52,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.error('[background] 发送分类结果失败:', err);
       });
     }).catch(err => {
-        console.error('[background] 分类错误:', err);
+      console.error('[background] 分类错误:', err);
       chrome.runtime.sendMessage({
-        type: 'classifyComplete',
-        data: { error: err.message }
+          type: 'classifyComplete', // 保持类型一致，但内部带上错误标识
+          data: { 
+              success: false, 
+              error: err.message || '未知错误' 
+          }
       }).catch(() => {});
-    });
+  });
     sendResponse({ status: 'classifying' });
     return true;
   }
@@ -307,6 +315,7 @@ async function classifyWithAI(bookmarks) {
 
 // 新的 AI 分类函数（使用滑动窗口）
 async function classifyBookmarks(data) {
+    isAbortRequested = false;
     console.log('[classifyBookmarks] ========== 开始分类 ==========');
     console.log('[classifyBookmarks] 接收到的原始数据:', {
         bookmarksCount: data.bookmarks?.length || 0,
@@ -347,7 +356,7 @@ async function classifyBookmarks(data) {
         throw new Error(errorMsg);
     }
 
-  const BATCH_SIZE = 50;
+  const BATCH_SIZE = 20;
   const WINDOW_OVERLAP = 5; // 滑动窗口重叠数量
   const allFolders = [];
     const aggregationLevel = data.aggregationLevel || 'medium'; // 聚合度：low, medium, high
@@ -375,6 +384,12 @@ async function classifyBookmarks(data) {
     let windowStart = 0;
     
       while (windowStart < validBookmarks.length) {
+        if (isAbortRequested) {
+          console.warn('[classifyBookmarks] 检测到中止信号，停止处理后续书签');
+          // 建议：发个消息给 UI 确认已经停了
+          sendClassifyProgress('🚫 分类已中止');
+          return; // 直接跳出整个异步函数
+      }
           const windowEnd = Math.min(windowStart + BATCH_SIZE, validBookmarks.length);
           const batch = validBookmarks.slice(windowStart, windowEnd);
       const batchNumber = Math.floor(windowStart / (BATCH_SIZE - WINDOW_OVERLAP)) + 1;
@@ -388,7 +403,8 @@ async function classifyBookmarks(data) {
               windowRange: `${windowStart + 1}-${windowEnd}`,
               sampleBookmarks: batch.slice(0, 3).map(b => ({ id: b.id, title: b.title }))
           });
-
+      // 【新增刹车检查 2】：在即将发起昂贵的 API 请求前再次检查
+  if (isAbortRequested) return;
           // 调用 AI API（传入已有文件夹名称以保持一致性）
           console.log(`[classifyBookmarks] 发起 API 请求 (${apiProvider})...`);
           console.log(`[classifyBookmarks] 当前已有文件夹名称:`, existingFolderNames);
@@ -437,6 +453,7 @@ async function classifyBookmarks(data) {
         // 频率限制：根据 API 提供商设置不同的延迟
         const delay = 4500; // Gemini 稍慢一些
           if (windowStart < validBookmarks.length) {
+            if (isAbortRequested) return;
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       } catch (error) {
@@ -462,7 +479,7 @@ async function classifyBookmarks(data) {
               console.log(`[classifyBookmarks] 429 错误，等待 ${retryDelay}ms 后继续...`);
               await new Promise(resolve => setTimeout(resolve, retryDelay));
           }
-
+          if (isAbortRequested) return;
         // 如果单个批次失败，继续处理下一批次
         windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
         // 增加延迟，避免连续失败

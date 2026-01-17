@@ -809,10 +809,24 @@ async function confirmOrganize() {
 }
 
 function cancelOrganize() {
+  console.log('[sidepanel] 用户点击了取消整理');
+  
+  // 1. 隐藏预览和结果区域
   aiPreviewSection.style.display = 'none';
-  aiClassificationResult = null;
-}
+  
+  // 2. 【关键修复】恢复最上方的主按钮状态
+  classifyBtn.disabled = false;
+  classifyBtn.textContent = '🤖 AI 智能分类';
+  
+  // 3. 清空进度条/文字提示
+  const classifyProgress = document.getElementById('classifyProgress');
+  if (classifyProgress) {
+      classifyProgress.textContent = '';
+  }
 
+  // 4. (非常重要) 通知后台停止分析，否则后台会一直跑完那 277 条
+  chrome.runtime.sendMessage({ type: 'stopClassification' });
+}
 // 导出备份
 async function exportBookmarks() {
   exportBackupBtn.disabled = true;
@@ -1010,4 +1024,19 @@ function countBookmarks(nodes) {
     if (node.children) count += countBookmarks(node.children);
   });
   return count;
+}
+
+// sidepanel.js
+function resetClassifyUI() {
+  const classifyBtn = document.getElementById('classifyBtn');
+  if (classifyBtn) {
+    classifyBtn.disabled = false;
+    classifyBtn.textContent = '🤖 AI 智能分类';
+    classifyBtn.classList.remove('loading'); // 如果你有加载样式的话
+  }
+  
+  const progressElement = document.getElementById('classifyProgress');
+  if (progressElement) {
+    progressElement.textContent = ''; // 清空进度文字
+  }
 }
