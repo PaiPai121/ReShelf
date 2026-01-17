@@ -313,228 +313,102 @@ async function classifyWithAI(bookmarks) {
   return [];
 }
 
-// 新的 AI 分类函数（使用滑动窗口）
+// background.js - 增强型分类主函数（具备跳过报错批次的功能）
 async function classifyBookmarks(data) {
-    isAbortRequested = false;
-    console.log('[classifyBookmarks] ========== 开始分类 ==========');
-    console.log('[classifyBookmarks] 接收到的原始数据:', {
-        bookmarksCount: data.bookmarks?.length || 0,
-        apiProvider: data.apiProvider,
-        hasApiKey: !!data.apiKey,
-        apiKeyLength: data.apiKey?.length || 0,
-        apiBaseUrl: data.apiBaseUrl || '使用默认'
-    });
-// 【新增：强效起搏器】启动一个并行的定时器，不阻塞主流程
-const keepAliveTimer = setInterval(() => {
-  // 这里的 getPlatformInfo 只是为了触发 Chrome 的内部活跃检测
-  chrome.runtime.getPlatformInfo(() => {
-      console.log('[SW-Guard] 发送强力心跳，当前时间:', new Date().toLocaleTimeString());
-  });
-}, 20000); // 每 20 秒跳动一次，确保在 30 秒阈值内
-  const { bookmarks, apiProvider, apiKey, apiBaseUrl } = data;
-
-    // 1. 数据输入检查 (The Input Gate)
-    console.log('[classifyBookmarks] 待分类原始数据 (前10个):',
-        bookmarks?.slice(0, 10).map(b => ({ id: b.id, title: b.title, url: b.url })) || []
-    );
-
-    // API Key 检查
-    if (!apiKey || apiKey.trim().length === 0) {
-        const errorMsg = 'API Key 为空，请先在设置中配置 API Key';
-        console.error('[classifyBookmarks]', errorMsg);
-        throw new Error(errorMsg);
-    }
-
-    // 数据有效性检查
-    if (!bookmarks || !Array.isArray(bookmarks) || bookmarks.length === 0) {
-        const errorMsg = '未找到可分类的有效书签';
-        console.error('[classifyBookmarks]', errorMsg);
-        throw new Error(errorMsg);
-    }
-
-    // 过滤掉无效书签
-    const validBookmarks = bookmarks.filter(b => b && b.id && b.title && b.url);
-    console.log(`[classifyBookmarks] 原始书签数: ${bookmarks.length}, 有效书签数: ${validBookmarks.length}`);
-
-    if (validBookmarks.length === 0) {
-        const errorMsg = '未找到可分类的有效书签（所有书签都缺少必要字段）';
-        console.error('[classifyBookmarks]', errorMsg);
-        throw new Error(errorMsg);
-    }
-
-  const BATCH_SIZE = 25;
-  const WINDOW_OVERLAP = 5; // 滑动窗口重叠数量
-  const allFolders = [];
-    const aggregationLevel = data.aggregationLevel || 'medium'; // 聚合度：low, medium, high
-
-    // 批处理一致性：维护已生成的文件夹名称映射表
-    const folderNameMap = new Map(); // 用于存储和复用文件夹名称
-    const existingFolderNames = []; // 已存在的文件夹名称列表
+  isAbortRequested = false;
+  console.log('[classifyBookmarks] ========== 开始分类任务 ==========');
   
-  try {
-      console.log(`[classifyBookmarks] 准备处理 ${validBookmarks.length} 个有效书签`);
-      console.log('[classifyBookmarks] API 配置:', {
-          provider: apiProvider,
-          hasKey: !!apiKey,
-          keyLength: apiKey.length,
-          keyPreview: apiKey.substring(0, 8) + '...',
-          baseUrl: apiBaseUrl || '默认',
-          aggregationLevel: aggregationLevel
-      });
+  const { bookmarks, apiProvider, apiKey, apiBaseUrl, aggregationLevel = 'medium' } = data;
 
-    // 发送进度更新
-    sendClassifyProgress('开始分析书签...');
-    
-    // 滑动窗口批处理
-    let processedCount = 0;
-    let windowStart = 0;
-    
+  // 1. 尝试从本地存储恢复断点进度
+  const storage = await chrome.storage.local.get(['classify_cache', 'last_index']);
+  let allFolders = storage.classify_cache || []; 
+  let windowStart = storage.last_index || 0;
+
+  const validBookmarks = bookmarks.filter(b => b && b.id && b.title && b.url);
+  const BATCH_SIZE = 25; 
+  const WINDOW_OVERLAP = 5;
+
+  // 启动心跳守护
+  const keepAliveTimer = setInterval(() => {
+      chrome.runtime.getPlatformInfo(() => {
+          console.log('[SW-Guard] 强力心跳维持中...', new Date().toLocaleTimeString());
+      });
+  }, 20000);
+
+  try {
       while (windowStart < validBookmarks.length) {
-        if (isAbortRequested) {
-          console.warn('[classifyBookmarks] 检测到中止信号，停止处理后续书签');
-          // 建议：发个消息给 UI 确认已经停了
-          sendClassifyProgress('🚫 分类已中止');
-          return; // 直接跳出整个异步函数
-      }
+          if (isAbortRequested) {
+              sendClassifyProgress('🚫 任务已由用户手动中止');
+              return;
+          }
+
           const windowEnd = Math.min(windowStart + BATCH_SIZE, validBookmarks.length);
           const batch = validBookmarks.slice(windowStart, windowEnd);
-      const batchNumber = Math.floor(windowStart / (BATCH_SIZE - WINDOW_OVERLAP)) + 1;
-          const estimatedBatches = Math.ceil(validBookmarks.length / (BATCH_SIZE - WINDOW_OVERLAP));
-      
-          sendClassifyProgress(`正在分析第 ${batchNumber} 批书签 (${windowStart + 1}-${windowEnd}/${validBookmarks.length})...`);
-      
-      try {
-          console.log(`[classifyBookmarks] 处理批次 ${batchNumber}/${estimatedBatches}:`, {
-              batchSize: batch.length,
-              windowRange: `${windowStart + 1}-${windowEnd}`,
-              sampleBookmarks: batch.slice(0, 3).map(b => ({ id: b.id, title: b.title }))
-          });
-      // 【新增刹车检查 2】：在即将发起昂贵的 API 请求前再次检查
-  if (isAbortRequested) return;
-          // 调用 AI API（传入已有文件夹名称以保持一致性）
-          console.log(`[classifyBookmarks] 发起 API 请求 (${apiProvider})...`);
-          console.log(`[classifyBookmarks] 当前已有文件夹名称:`, existingFolderNames);
-        const batchResult = await callAIClassifyAPI(
-          batch,
-          apiProvider,
-          apiKey,
-            apiBaseUrl,
-            existingFolderNames,
-            aggregationLevel
-        );
-        
-          console.log(`[classifyBookmarks] API 响应接收:`, {
-              hasResult: !!batchResult,
-              foldersCount: batchResult?.folders?.length || 0,
-              sampleFolders: batchResult?.folders?.slice(0, 2) || []
-          });
+          const batchNumber = Math.floor(windowStart / (BATCH_SIZE - WINDOW_OVERLAP)) + 1;
+          const totalBatches = Math.ceil(validBookmarks.length / (BATCH_SIZE - WINDOW_OVERLAP));
 
-        if (batchResult && batchResult.folders) {
-            // 更新文件夹名称映射表（用于后续批次的一致性）
-            batchResult.folders.forEach(folder => {
-                const folderName = folder.folder;
-                if (!existingFolderNames.includes(folderName)) {
-                    existingFolderNames.push(folderName);
-                }
-                // 提取大类名称（第一层）
-                const topLevel = folderName.split('/')[0];
-                if (!folderNameMap.has(topLevel)) {
-                    folderNameMap.set(topLevel, []);
-                }
-                folderNameMap.get(topLevel).push(folderName);
-            });
+          sendClassifyProgress(`正在处理第 ${batchNumber}/${totalBatches} 批书签...`);
 
-          allFolders.push(...batchResult.folders);
-            console.log(`[classifyBookmarks] 批次 ${batchNumber} 完成，获得 ${batchResult.folders.length} 个分类建议`);
-            console.log(`[classifyBookmarks] 当前累计文件夹数: ${existingFolderNames.length}`);
-        } else {
-            console.warn(`[classifyBookmarks] 批次 ${batchNumber} 未返回有效结果`);
-        }
-        
-        processedCount += batch.length;
-        
-        // 滑动窗口：下一个窗口的起始位置
-        windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
-        
-        // 频率限制：根据 API 提供商设置不同的延迟
-        const delay = 4500; // Gemini 稍慢一些
-          if (windowStart < validBookmarks.length) {
-            if (isAbortRequested) return;
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      } catch (error) {
-          console.error(`[classifyBookmarks] 批次处理错误 (${windowStart}-${windowEnd}):`, {
-              error: error.message,
-              stack: error.stack,
-              batchNumber,
-              batchSize: batch.length
-          });
+          try {
+              // 发起 API 请求（带之前实现的超时控制）
+              const batchResult = await callAIClassifyAPI(batch, apiProvider, apiKey, apiBaseUrl, [], aggregationLevel);
 
-          // 检查是否是余额不足错误，如果是则立即停止
-          if (error.message.includes('余额不足') ||
-              error.message.includes('无可用资源包') ||
-              error.message.includes('请充值') ||
-              error.message.includes('免费额度已用完')) {
-              console.error('[classifyBookmarks] 检测到余额不足错误，停止处理');
-              throw error; // 抛出错误，让上层处理
+              if (batchResult && batchResult.folders) {
+                  allFolders.push(...batchResult.folders);
+                  console.log(`[Batch ${batchNumber}] 成功获取分类建议`);
+              } else {
+                  console.warn(`[Batch ${batchNumber}] AI 响应有效但未给出建议，将归入“未分类”`);
+              }
+
+          } catch (error) {
+              // 【核心优化】针对单批次失败的处理
+              console.error(`[Batch ${batchNumber}] 发生错误:`, error.message);
+              
+              // 只有欠费类错误才彻底中断，其他错误（如 429、超时、Failed to fetch）一律记录后跳过
+              if (error.message.includes('余额不足') || error.message.includes('请充值')) {
+                  throw error; 
+              }
+              
+              sendClassifyProgress(`⚠️ 第 ${batchNumber} 批响应异常 (${error.message.substring(0,15)}...)，已自动跳过`);
+              // 此处不抛出错误，以便循环继续执行
           }
 
-          // 如果是 429 错误（频率限制），使用指数退避重试
-          if (error.message.includes('429') || error.message.includes('频率超限')) {
-              const retryDelay = Math.min(2000 * Math.pow(2, batchNumber % 3), 10000); // 最多等待10秒
-              console.log(`[classifyBookmarks] 429 错误，等待 ${retryDelay}ms 后继续...`);
-              await new Promise(resolve => setTimeout(resolve, retryDelay));
-          }
-          if (isAbortRequested) return;
-        // 如果单个批次失败，继续处理下一批次
-        windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
-        // 增加延迟，避免连续失败
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-      
-    }
-    
-      console.log(`[classifyBookmarks] 所有批次处理完成，共获得 ${allFolders.length} 个分类建议`);
-
-      // 检查是否有任何成功的批次
-      if (allFolders.length === 0) {
-          const errorMsg = '所有批次都失败了，请检查 API 配置和网络连接。如果使用 Gemini API，请确保使用正确的模型名称（gemini-1.5-flash 或 gemini-1.5-pro）。';
-          console.error('[classifyBookmarks]', errorMsg);
-          throw new Error(errorMsg);
+          // 【关键关键】无论成功还是失败，都必须推进指针并保存进度，防止死循环
+          windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
+          
+          await chrome.storage.local.set({
+              'classify_cache': allFolders,
+              'last_index': windowStart
+          });
+          
+          // 批次间强制冷却，防止触发 API 频率限制
+          await new Promise(r => setTimeout(r, 2000));
       }
 
-    // 合并相同文件夹的建议
-      console.log('[classifyBookmarks] 开始合并文件夹建议...');
+      // 2. 全部批次走完，清理本地缓存
+      await chrome.storage.local.remove(['classify_cache', 'last_index']);
+      console.log('[classifyBookmarks] 所有批次处理结束，正在合并结果...');
+
+      // 执行合并与去重逻辑
       let mergedFolders = mergeFolderSuggestions(allFolders);
-      console.log(`[classifyBookmarks] 初步合并完成，${mergedFolders.length} 个分类`);
-
-      // 根据聚合度进行后处理
       mergedFolders = applyAggregationRules(mergedFolders, aggregationLevel);
-      console.log(`[classifyBookmarks] 聚合规则应用完成，最终 ${mergedFolders.length} 个分类:`,
-          mergedFolders.map(f => ({ folder: f.folder, count: f.bookmarks?.length || 0 }))
-      );
-    
-    sendClassifyProgress('分类分析完成！');
-    
-    return {
-      folders: mergedFolders,
-        totalBookmarks: validBookmarks.length,
-      processedCount: processedCount
-    };
-  } catch (error) {
-      console.error('[classifyBookmarks] 分类过程发生错误:', {
-          error: error.message,
-          stack: error.stack,
-          bookmarksCount: validBookmarks?.length || 0
-      });
-      throw error;
+
+      return {
+          folders: mergedFolders,
+          totalBookmarks: validBookmarks.length,
+          processedCount: validBookmarks.length
+      };
+
+  } catch (fatalError) {
+      console.error('[classifyBookmarks] 任务因致命错误中断:', fatalError);
+      throw fatalError;
   } finally {
-    // 【关键】无论任务成功还是失败，必须清除定时器，否则 SW 会永远无法休眠
-    clearInterval(keepAliveTimer);
-    console.log('[SW-Guard] 任务结束，停止心跳');
+      // 确保清除心跳定时器
+      clearInterval(keepAliveTimer);
+      console.log('[SW-Guard] 心跳已停止');
   }
 }
-
 // 调用 AI API（支持 Gemini 和智谱 AI）
 async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingFolders = [], aggregationLevel = 'medium') {
     console.log('[callAIClassifyAPI] ========== API 调用拦截器 ==========');
@@ -795,168 +669,55 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
   
   return parseAIResponse(responseText, bookmarks);
 }
-// 新增 OpenRouter 调用函数
+
 async function callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl) {
   const apiUrl = baseUrl || 'https://openrouter.ai/api/v1/chat/completions';
   
-  console.log('[callOpenRouterAPI] 开始请求 OpenRouter...');
-  console.log('[callOpenRouterAPI] 请求 URL:', apiUrl);
-  console.log('[callOpenRouterAPI] 使用模型:', OPENROUTER_FREE_MODEL);
+  // 创建一个 60 秒自动断开的控制器
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000); 
+  if (!apiUrl.startsWith('http')) {
+    throw new Error('API 地址必须以 http:// 或 https:// 开头，请检查设置');
+  }
 
   try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/kunmeigo/ReShelf',
-        'X-Title': 'ReShelf'
-      },
-      body: JSON.stringify({
-        model: OPENROUTER_FREE_MODEL,
-        messages: [
-          { role: 'system', content: '你是一位资深的图书管理员。请只返回 JSON 格式的响应。' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.3
-      })
-    });
+      const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`
+          },
+          signal: controller.signal, // 绑定超时信号
+          body: JSON.stringify({
+              model: OPENROUTER_FREE_MODEL,
+              messages: [
+                  { role: 'system', content: '你是一位资深的图书管理员。请只返回 JSON 格式。' },
+                  { role: 'user', content: prompt }
+              ],
+              temperature: 0.3
+          })
+      });
 
-    console.log('[callOpenRouterAPI] 响应状态:', response.status, response.statusText);
+      clearTimeout(timeoutId); // 成功响应则清除定时器
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[callOpenRouterAPI] ========== API 错误响应 ==========');
-      console.error('[callOpenRouterAPI] 状态码:', response.status);
-      console.error('[callOpenRouterAPI] 错误响应体:', errorText);
-      throw new Error(`OpenRouter API 错误: ${response.status} - ${errorText}`);
-    }
+      if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`API 错误: ${response.status} - ${errorText}`);
+      }
 
-    const data = await response.json();
-    
-    // 提取响应文本
-    let responseText = '';
-    if (data.choices && data.choices[0] && data.choices[0].message) {
-      responseText = data.choices[0].message.content;
-      console.log('[callOpenRouterAPI] 成功获取响应文本，长度:', responseText.length, '字符');
-      console.log('[callOpenRouterAPI] 响应文本预览:', responseText.substring(0, 300));
-    } else {
-      console.warn('[callOpenRouterAPI] 响应数据结构异常，未找到 content:', data);
-    }
-
-    // 调用解析器
-    console.log('[callOpenRouterAPI] 准备进入 parseAIResponse...');
-    return parseAIResponse(responseText, bookmarks);
-
+      const data = await response.json();
+      return parseAIResponse(data.choices?.[0]?.message?.content, bookmarks);
   } catch (error) {
-    console.error('[callOpenRouterAPI] 请求发生异常:', error);
-    throw error;
-  }
-}
-// 调用智谱 AI API
-async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
-  const apiUrl = baseUrl || 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-  
-    console.log('[callZhipuAPI] 请求 URL:', apiUrl);
-    console.log('[callZhipuAPI] 请求体大小:', JSON.stringify({
-        model: 'glm-4',
-        messages: [
-            {
-                role: 'system',
-                content: '你是一位资深的图书管理员，擅长对数字资源进行科学分类。请只返回 JSON 格式的响应，不要包含其他文字说明。'
-            },
-            {
-                role: 'user',
-                content: prompt
-            }
-        ],
-        temperature: 0.7
-    }).length, '字节');
-
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'glm-4',
-      messages: [
-        {
-          role: 'system',
-          content: '你是一位资深的图书管理员，擅长对数字资源进行科学分类。请只返回 JSON 格式的响应，不要包含其他文字说明。'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.7
-    })
-  });
-  
-    console.log('[callZhipuAPI] 响应状态:', response.status, response.statusText);
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[callZhipuAPI] ========== API 错误响应 ==========');
-        console.error('[callZhipuAPI] 状态码:', response.status);
-        console.error('[callZhipuAPI] 状态文本:', response.statusText);
-        console.error('[callZhipuAPI] 错误响应体:', errorText);
-
-        // 解析错误信息
-        let errorMessage = `智谱 AI API 错误: ${response.status}`;
-        try {
-            const errorData = JSON.parse(errorText);
-            if (errorData.error) {
-                errorMessage = errorData.error.message || errorMessage;
-                // 检查是否是余额不足
-                if (errorData.error.message && (
-                    errorData.error.message.includes('余额不足') ||
-                    errorData.error.message.includes('无可用资源包') ||
-                    errorData.error.message.includes('请充值')
-                )) {
-                    errorMessage = '智谱 AI 免费额度已用完，请充值或切换到 Gemini API';
-                }
-            }
-        } catch (e) {
-            errorMessage = `${errorMessage} - ${errorText}`;
-        }
-
-        console.error('[callZhipuAPI] 可能的原因:');
-        if (response.status === 401 || response.status === 403) {
-            console.error('  - API Key 无效或已过期');
-        } else if (response.status === 429) {
-            console.error('  - API 调用频率超限或余额不足');
-            console.error('  - 建议：切换到 Gemini API或减少批次大小');
-        } else if (response.status === 402 || response.status === 403) {
-            console.error('  - 账户欠费或配额不足');
-        } else if (response.status >= 500) {
-            console.error('  - 服务器错误，可能是网络问题');
-        }
-        throw new Error(errorMessage);
+    if (error.name === 'AbortError') {
+      throw new Error('API 响应超时（3分钟），模型响应太慢，请尝试减少批次大小或检查网络。');
     }
-  
-  const data = await response.json();
-    console.log('[callZhipuAPI] 响应数据结构:', {
-        hasChoices: !!data.choices,
-        choicesCount: data.choices?.length || 0,
-        hasMessage: !!(data.choices?.[0]?.message)
-    });
-  
-  // 提取响应文本
-  let responseText = '';
-  if (data.choices && data.choices[0] && data.choices[0].message) {
-    responseText = data.choices[0].message.content;
-      console.log('[callZhipuAPI] 响应文本长度:', responseText.length, '字符');
-      console.log('[callZhipuAPI] 响应文本预览:', responseText.substring(0, 300));
-  } else {
-      console.warn('[callZhipuAPI] 响应中未找到有效内容:', data);
+    console.error('[Network Error Details]:', error); // 打印完整错误
+    if (!navigator.onLine) {
+        throw new Error('网络连接已断开，请检查网络设置。');
+    }
+    throw new Error(`网络请求失败: ${error.message}。请检查 API URL 是否正确或代理是否开启。`);
   }
-  
-  return parseAIResponse(responseText, bookmarks);
 }
-
 // 解析 AI 响应（加强错误处理）
 function parseAIResponse(responseText, bookmarks) {
     console.log('[parseAIResponse] ========== 解析器鲁棒性检查 ==========');
@@ -1166,7 +927,9 @@ async function testApiConnection(data) {
         if (apiProvider === 'gemini') {
             const model = 'gemini-flash-latest';
             let url;
-
+            if (!url.startsWith('http')) {
+              throw new Error('API 地址必须以 http:// 或 https:// 开头');
+            }
             if (apiBaseUrl && apiBaseUrl.trim()) {
                 url = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
                 if (!url.includes('models/')) {

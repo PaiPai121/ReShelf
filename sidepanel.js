@@ -109,6 +109,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 清理按钮事件
   cleanAllBrokenBtn.addEventListener('click', cleanAllBroken);
   cleanAllDuplicatesBtn.addEventListener('click', cleanAllDuplicates);
+// 检查是否有未完成的任务
+const storage = await chrome.storage.local.get(['last_index']);
+if (storage.last_index > 0) {
+    classifyBtn.textContent = '🚀 继续上次分类';
+    classifyBtn.style.background = 'linear-gradient(135deg, #FF9800 0%, #F44336 100%)';
+}
 });
 
 // 开始扫描
