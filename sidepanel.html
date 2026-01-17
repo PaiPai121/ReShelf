@@ -450,10 +450,17 @@
         <button id="toggleApiSettings" class="toggle-btn">▼</button>
       </div>
       <div id="apiSettingsContent" style="display: none;">
+        <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px; background: #fff5f5; border-radius: 6px; border: 1px dashed #e74c3c;">
+          <input type="checkbox" id="debugMode" style="width: 16px; height: 16px; cursor: pointer;">
+          <label for="debugMode" style="margin-bottom: 0; cursor: pointer; color: #e74c3c; font-size: 12px; font-weight: 600;">
+              🐞 调试模式 (跳过扫描，仅分类前 20 条)
+          </label>
+        </div>
         <div class="form-group">
           <label for="apiProvider">API 提供商</label>
           <select id="apiProvider" class="form-input">
             <option value="gemini">Google Gemini </option>
+            <option value="openrouter">OpenRouter (Free Models)</option>
             <option value="zhipu">智谱 AI (GLM) - 需要充值</option>
           </select>
         <small class="form-hint" style="margin-top: 4px; display: block;">
@@ -482,7 +489,7 @@
       <button id="exportBackupBtn" class="button button-secondary" style="flex: 1;">💾 导出备份</button>
     </div>
     <!-- AI 分类控制区 -->
-    <div id="aiClassifySection" style="display: none; margin-bottom: 16px;">
+    <div id="aiClassifySection" style="margin-bottom: 16px;">
         <div class="section" style="padding: 16px;">
             <div class="form-group" style="margin-bottom: 12px;">
                 <label for="aggregationLevel" style="display: flex; justify-content: space-between; align-items: center;">

@@ -529,68 +529,78 @@ async function testApiConnectionHandler() {
     testApiConnection.textContent = '🔌 测试连接';
   });
 }
-
-// AI 分类相关函数
+// 在 sidepanel.js 末尾添加
+async function getRawBookmarksDirectly() {
+  return new Promise((resolve) => {
+    chrome.bookmarks.getTree((tree) => {
+      // 使用您现有的 flattenBookmarkTree 函数
+      const all = flattenBookmarkTree(tree);
+      // 仅保留有有效 URL 的书签
+      resolve(all.filter(b => b.url && b.url.startsWith('http')));
+    });
+  });
+}
 async function startAIClassification() {
-  // 检查 API 设置
-  const result = await chrome.storage.local.get(['apiProvider', 'apiKey']);
+  const isDebug = document.getElementById('debugMode').checked;
+  
+  // 1. 检查 API 设置
+  const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'apiBaseUrl']);
   if (!result.apiKey) {
     alert('请先配置 API Key');
     apiSettingsContent.style.display = 'block';
-    toggleApiSettings.textContent = '▲';
     return;
   }
   
-  // 空数据检查
-  if (!validBookmarks || validBookmarks.length === 0) {
-    alert('没有可供 AI 分类的有效书签。请先扫描书签，确保有存活的、非重复的书签。');
-    return;
-  }
-  
-    // 获取聚合度设置
-    const aggregationSlider = document.getElementById('aggregationLevel');
-    const aggregationValue = aggregationSlider ? parseInt(aggregationSlider.value) : 1;
-    const aggregationLevel = aggregationValue === 0 ? 'low' : (aggregationValue === 2 ? 'high' : 'medium');
+  let bookmarksToClassify = [];
 
-    console.log('[startAIClassification] 开始分类，有效书签数:', validBookmarks.length, '聚合度:', aggregationLevel);
-  
+  // 2. 核心逻辑：自动获取数据
+  if (validBookmarks && validBookmarks.length > 0) {
+    // 情况 A：已经扫描过了，使用扫描后的存活书签
+    bookmarksToClassify = validBookmarks;
+    console.log('[ReShelf] 使用已扫描的存活书签进行分类');
+  } else {
+    // 情况 B：未扫描，直接从浏览器数据库抓取
+    console.log('[ReShelf] 未检测到扫描数据，正在直接读取书签库...');
+    const all = await getRawBookmarksDirectly(); // 调用之前添加的直接获取函数
+    bookmarksToClassify = all;
+  }
+
+  // 3. 调试模式截断：如果开启了调试，只取前 20 条
+  if (isDebug) {
+    console.log('[Debug Mode] 仅处理前 20 条测试数据');
+    bookmarksToClassify = bookmarksToClassify.slice(0, 20);
+  }
+
+  // 4. 空数据检查
+  if (bookmarksToClassify.length === 0) {
+    alert('未找到任何可分类的书签。');
+    return;
+  }
+
+  // 3. 执行分类请求
   classifyBtn.disabled = true;
-  classifyBtn.textContent = 'AI 分析中...';
+  classifyBtn.textContent = isDebug ? '🐞 调试分析中...' : 'AI 分析中...';
   
-  // 显示加载状态
   folderTree.innerHTML = `
     <div class="loading">
       <div class="spinner"></div>
-      <div>AI 正在思考中...</div>
-      <div style="font-size: 12px; color: #7f8c8d; margin-top: 8px;">正在使用 AI 分析 ${validBookmarks.length} 个书签并生成分类建议...</div>
+      <div>${isDebug ? '调试模式：正在分析前 20 条书签...' : 'AI 正在分析全量书签...'}</div>
     </div>
   `;
   aiPreviewSection.style.display = 'block';
   
-  // 发送分类请求到 background
   chrome.runtime.sendMessage({
     type: 'classifyBookmarks',
     data: {
-      bookmarks: validBookmarks,
+      bookmarks: bookmarksToClassify,
       apiProvider: result.apiProvider || 'gemini',
       apiKey: result.apiKey,
-        apiBaseUrl: result.apiBaseUrl || '',
-        aggregationLevel: aggregationLevel
-    }
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error('Error:', chrome.runtime.lastError);
-      folderTree.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-state-icon">❌</div>
-          <div>分类失败：${chrome.runtime.lastError.message}</div>
-        </div>
-      `;
-      resetClassifyButton();
+      apiBaseUrl: result.apiBaseUrl || '',
+      aggregationLevel: document.getElementById('aggregationLevel').value === '0' ? 'low' : 
+                        (document.getElementById('aggregationLevel').value === '2' ? 'high' : 'medium')
     }
   });
 }
-
 function updateClassifyProgress(data) {
   console.log('[updateClassifyProgress]', data);
   if (data.message) {
@@ -850,7 +860,16 @@ async function exportBookmarks() {
     exportBackupBtn.textContent = '💾 导出备份';
   }
 }
-
+// 新增函数：直接从浏览器获取所有有效 URL 书签，不经过死链扫描
+async function getFullBookmarksDirectly() {
+  return new Promise((resolve) => {
+    chrome.bookmarks.getTree((tree) => {
+      const all = flattenBookmarkTree(tree);
+      // 过滤掉没有 URL 的目录项
+      resolve(all.filter(b => b.url));
+    });
+  });
+}
 // 清理所有失效链接
 async function cleanAllBroken() {
   const count = scanResults.broken.length;

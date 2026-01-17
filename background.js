@@ -199,13 +199,15 @@ async function detectBrokenLinks(bookmarks) {
   
   return broken;
 }
-
-// 检查单个链接状态
 async function checkLinkStatus(bookmark) {
+  // 过滤浏览器内部协议 (chrome://, edge://, about:, file:// 等)
+  if (!bookmark.url.startsWith('http')) {
+    return null; // 认为内部链接是有效的，不进行 fetch 测试
+  }
+
   try {
-    // 使用 HEAD 请求检测链接
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     
     const response = await fetch(bookmark.url, {
       method: 'HEAD',
@@ -214,12 +216,8 @@ async function checkLinkStatus(bookmark) {
     });
     
     clearTimeout(timeoutId);
-    
-    // 在 no-cors 模式下，无法读取状态码
-    // 如果请求没有抛出异常，认为链接有效
     return null;
   } catch (error) {
-    // 请求失败，可能是死链
     console.log(`Broken link detected: ${bookmark.title} - ${bookmark.url}`);
     return bookmark;
   }
@@ -308,7 +306,7 @@ async function classifyBookmarks(data) {
         throw new Error(errorMsg);
     }
 
-  const BATCH_SIZE = 20;
+  const BATCH_SIZE = 50;
   const WINDOW_OVERLAP = 5; // 滑动窗口重叠数量
   const allFolders = [];
     const aggregationLevel = data.aggregationLevel || 'medium'; // 聚合度：low, medium, high
@@ -396,7 +394,7 @@ async function classifyBookmarks(data) {
         windowStart += (BATCH_SIZE - WINDOW_OVERLAP);
         
         // 频率限制：根据 API 提供商设置不同的延迟
-        const delay = apiProvider === 'gemini' ? 1000 : 800; // Gemini 稍慢一些
+        const delay = 4500; // Gemini 稍慢一些
           if (windowStart < validBookmarks.length) {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -486,6 +484,8 @@ async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingF
   } else if (provider === 'zhipu') {
       console.log('[callAIClassifyAPI] 使用智谱 AI API');
     return await callZhipuAPI(bookmarks, prompt, apiKey, baseUrl);
+  } else if (provider === 'openrouter') {
+    return await callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl);
   } else {
     throw new Error(`不支持的 API 提供商: ${provider}`);
   }
@@ -716,7 +716,64 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
   
   return parseAIResponse(responseText, bookmarks);
 }
+// 新增 OpenRouter 调用函数
+async function callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl) {
+  const apiUrl = baseUrl || 'https://openrouter.ai/api/v1/chat/completions';
+  
+  console.log('[callOpenRouterAPI] 开始请求 OpenRouter...');
+  console.log('[callOpenRouterAPI] 请求 URL:', apiUrl);
+  console.log('[callOpenRouterAPI] 使用模型:', OPENROUTER_FREE_MODEL);
 
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://github.com/kunmeigo/ReShelf',
+        'X-Title': 'ReShelf'
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_FREE_MODEL,
+        messages: [
+          { role: 'system', content: '你是一位资深的图书管理员。请只返回 JSON 格式的响应。' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.3
+      })
+    });
+
+    console.log('[callOpenRouterAPI] 响应状态:', response.status, response.statusText);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[callOpenRouterAPI] ========== API 错误响应 ==========');
+      console.error('[callOpenRouterAPI] 状态码:', response.status);
+      console.error('[callOpenRouterAPI] 错误响应体:', errorText);
+      throw new Error(`OpenRouter API 错误: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    // 提取响应文本
+    let responseText = '';
+    if (data.choices && data.choices[0] && data.choices[0].message) {
+      responseText = data.choices[0].message.content;
+      console.log('[callOpenRouterAPI] 成功获取响应文本，长度:', responseText.length, '字符');
+      console.log('[callOpenRouterAPI] 响应文本预览:', responseText.substring(0, 300));
+    } else {
+      console.warn('[callOpenRouterAPI] 响应数据结构异常，未找到 content:', data);
+    }
+
+    // 调用解析器
+    console.log('[callOpenRouterAPI] 准备进入 parseAIResponse...');
+    return parseAIResponse(responseText, bookmarks);
+
+  } catch (error) {
+    console.error('[callOpenRouterAPI] 请求发生异常:', error);
+    throw error;
+  }
+}
 // 调用智谱 AI API
 async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
   const apiUrl = baseUrl || 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
@@ -996,7 +1053,7 @@ function sendClassifyProgress(message) {
     data: { message }
   }).catch(() => {}); // 忽略错误
 }
-
+const OPENROUTER_FREE_MODEL = "z-ai/glm-4.5-air:free";
 // 测试 API 连接
 async function testApiConnection(data) {
     const { apiProvider, apiKey, apiBaseUrl } = data;
@@ -1083,7 +1140,28 @@ async function testApiConnection(data) {
             const data = await response.json();
             console.log('[testApiConnection] 智谱 AI 响应成功:', !!data.choices);
 
-        } else {
+        } else if (apiProvider === 'openrouter') {
+          const apiUrl = apiBaseUrl || 'https://openrouter.ai/api/v1/chat/completions';
+          
+          const response = await fetch(apiUrl, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${apiKey}`,
+                  'HTTP-Referer': 'https://github.com/kunmeigo/ReShelf',
+                  'X-Title': 'ReShelf'
+              },
+              body: JSON.stringify({
+                  model: OPENROUTER_FREE_MODEL, // 使用变量
+                  messages: [{ role: 'user', content: 'Hi' }]
+              })
+          });
+  
+          if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(`OpenRouter 错误 (${response.status}): ${errorText}`);
+          }
+      } else {
             throw new Error(`不支持的 API 提供商: ${apiProvider}`);
         }
 
@@ -1177,30 +1255,29 @@ async function findOrCreateFolder(folderName) {
   return newFolder;
 }
 
-// 查找或创建多级文件夹
 async function findOrCreateFolderPath(folderPath) {
   const tree = await chrome.bookmarks.getTree();
-  const rootId = tree[0].id;
-  const parts = folderPath.split('/').filter(p => p.trim());
+  // tree[0] 是不可见的根，tree[0].children[0] 是书签栏，tree[0].children[1] 是其他收藏夹
+  // 我们默认将 AI 分类结果放在 "其他收藏夹" (Other Bookmarks) 下
+  const otherBookmarks = tree[0].children[1] || tree[0].children[0];
+  const rootId = otherBookmarks.id; 
   
+  const parts = folderPath.split('/').filter(p => p.trim());
   let currentParentId = rootId;
   
   for (const part of parts) {
     const folderName = part.trim();
     if (!folderName) continue;
     
-    // 在当前父文件夹下查找
     const children = await chrome.bookmarks.getChildren(currentParentId);
     let folder = children.find(child => !child.url && child.title === folderName);
     
     if (!folder) {
-      // 创建新文件夹
       folder = await chrome.bookmarks.create({
         title: folderName,
         parentId: currentParentId
       });
     }
-    
     currentParentId = folder.id;
   }
   
