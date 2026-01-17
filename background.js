@@ -671,8 +671,13 @@ function buildClassificationPrompt(bookmarks, existingFolders = [], aggregationL
         const folderNames = existingFolders.map(f => f.folder).join('、');
         existingFoldersHint = `\n已有文件夹参考（请尽量复用这些名称）：${folderNames}\n`;
     }
-
-  return `你是资深数字图书管理员。现在有 ${totalCount} 个书签需要分类。根据书签的标题和URL推断所属领域，建议层级分明的文件夹结构。
+  const existingHint = existingFolders.length > 0 
+    ? `### 动态约束（极其重要）：
+目前已经建立了以下分类：[${existingFolders.join('、')}]。
+你的首要任务是【将新书签归入上述已有分类】。只有当现有分类完全无法容纳新书签时，才允许创建新分类。严禁创建语义重合的分类（例如有了“编程”就不要再建“代码”）。`
+    : `### 分类原则：
+请使用宽泛、具有高度概括性的专业术语作为一级目录。避免使用“相关”、“资源”、“技术”等冗余后缀。`;
+  return `你是资深数字图书管理员。${existingHint}。现在有 ${totalCount} 个书签需要分类。根据书签的标题和URL推断所属领域，建议层级分明的文件夹结构。
 
 ${aggregationHint}
 
@@ -1093,28 +1098,43 @@ function parseAIResponse(responseText, bookmarks) {
   }
 }
 
-// 合并文件夹建议（处理重复和冲突）
+// background.js 启发式合并函数
 function mergeFolderSuggestions(allFolders) {
   const folderMap = new Map();
-  
-  // 合并相同文件夹路径的书签
-  for (const folder of allFolders) {
-    if (!folderMap.has(folder.folder)) {
-      folderMap.set(folder.folder, {
-        folder: folder.folder,
-        bookmarks: []
-      });
-    }
-    
-    const existing = folderMap.get(folder.folder);
-    // 合并书签，去重
-    const bookmarkIds = new Set(existing.bookmarks.map(b => b.id));
-    for (const bookmark of folder.bookmarks) {
-      if (!bookmarkIds.has(bookmark.id)) {
-        existing.bookmarks.push(bookmark);
-        bookmarkIds.add(bookmark.id);
+
+  // 按长度排序，先处理短的（核心词），后处理长的（扩展词）
+  const sortedFolders = allFolders.sort((a, b) => a.folder.length - b.folder.length);
+
+  for (const item of sortedFolders) {
+    let targetFolder = item.folder;
+
+    // 自动归一化逻辑：遍历已有的 key，检查是否存在语义包含关系
+    for (const existingKey of folderMap.keys()) {
+      // 场景 A：完全包含（如 “编程” 包含在 “编程开发” 中，或反之）
+      // 场景 B：前缀重合（如 “游戏” 与 “游戏娱乐”）
+      const isSimilar = 
+        targetFolder.includes(existingKey) || 
+        existingKey.includes(targetFolder) ||
+        (targetFolder.substring(0, 2) === existingKey.substring(0, 2)); // 前两个字相同通常意味着语义接近
+
+      if (isSimilar) {
+        // 倾向于保留更短、更通用的名称，或者保留第一个出现的名称
+        targetFolder = existingKey;
+        break; 
       }
     }
+
+    if (!folderMap.has(targetFolder)) {
+      folderMap.set(targetFolder, { folder: targetFolder, bookmarks: [] });
+    }
+    
+    // 合并书签...
+    const current = folderMap.get(targetFolder);
+    item.bookmarks.forEach(b => {
+      if (!current.bookmarks.find(eb => eb.id === b.id)) {
+        current.bookmarks.push(b);
+      }
+    });
   }
   
   return Array.from(folderMap.values());
