@@ -1540,12 +1540,20 @@ async function organizeBookmarks(data) {
         // 移动书签到目标文件夹
         for (const bookmark of bookmarks) {
           try {
-            await chrome.bookmarks.move(bookmark.id, {
-              parentId: targetFolder.id
-            });
-            console.log(`Moved: ${bookmark.title} -> ${folderPath}`);
-          } catch (error) {
-            console.error(`Error moving bookmark ${bookmark.id}:`, error);
+            // 2. 【核心修复】在移动前检查书签是否依然存在
+            const existCheck = await chrome.bookmarks.get(bookmark.id).catch(() => null);
+            
+            if (existCheck) {
+              await chrome.bookmarks.move(bookmark.id, {
+                parentId: targetFolder.id
+              });
+              console.log(`Successfully moved: ${bookmark.title}`);
+            } else {
+              console.warn(`[Skip] 书签已被提前删除或不存在: ${bookmark.title} (ID: ${bookmark.id})`);
+            }
+          } catch (moveError) {
+            // 即使单个书签移动失败（比如权限问题），也不要影响后续书签
+            console.error(`移动单个书签失败: ${bookmark.title}`, moveError);
           }
         }
       } catch (error) {
