@@ -362,7 +362,7 @@ const keepAliveTimer = setInterval(() => {
         throw new Error(errorMsg);
     }
 
-  const BATCH_SIZE = 20;
+  const BATCH_SIZE = 25;
   const WINDOW_OVERLAP = 5; // 滑动窗口重叠数量
   const allFolders = [];
     const aggregationLevel = data.aggregationLevel || 'medium'; // 聚合度：low, medium, high
@@ -650,6 +650,7 @@ function applyAggregationRules(folders, aggregationLevel) {
 
 // 构建分类提示词（优化版：增加硬约束）
 function buildClassificationPrompt(bookmarks, existingFolders = [], aggregationLevel = 'medium') {
+  const totalCount = bookmarks.length; // 获取当前批次的总数
   const bookmarksList = bookmarks.map((b, index) => 
     `${index + 1}. 标题: "${b.title}", URL: ${b.url}, ID: ${b.id}`
   ).join('\n');
@@ -671,7 +672,7 @@ function buildClassificationPrompt(bookmarks, existingFolders = [], aggregationL
         existingFoldersHint = `\n已有文件夹参考（请尽量复用这些名称）：${folderNames}\n`;
     }
 
-  return `你是资深数字图书管理员。根据书签的标题和URL推断所属领域，建议层级分明的文件夹结构。
+  return `你是资深数字图书管理员。现在有 ${totalCount} 个书签需要分类。根据书签的标题和URL推断所属领域，建议层级分明的文件夹结构。
 
 ${aggregationHint}
 
@@ -696,6 +697,10 @@ ${aggregationHint}
    - 使用简洁、通用的中文名称
    - 避免使用英文缩写（除非是通用术语如"AI"、"UI"）
    - 保持命名风格统一${existingFoldersHint}
+
+6. 百分之百覆盖：
+   - 必须处理所有 ${totalCount} 个 ID，严禁遗漏任何一个 ID。
+   - 重要：不要创建空文件夹，确保每个 ID 都被正确分类。
 
 书签列表：
 ${bookmarksList}
@@ -1545,48 +1550,41 @@ async function cleanAllDuplicates(duplicateGroups) {
 // 整理书签（根据 AI 分类结果）
 async function organizeBookmarks(data) {
   try {
-    const { folders } = data;
+    const { folders, originalBookmarks } = data; // 获取分类建议和原始列表
     
     if (!folders || folders.length === 0) {
       throw new Error('没有可执行的分类方案');
     }
-    
-    console.log(`开始整理 ${folders.length} 个分类...`);
+
+    // 1. 建立已分类 ID 的集合 (Set)，提高查询效率
+    const categorizedIds = new Set();
+    folders.forEach(f => {
+      if (f.ids) {
+        f.ids.forEach(id => categorizedIds.add(String(id)));
+      }
+    });
+    const missingBookmarks = originalBookmarks.filter(b => !categorizedIds.has(String(b.id)));
+    console.log(`[Organize] 计划移动: ${categorizedIds.size} 个, 兜底移动: ${missingBookmarks.length} 个`);
     
     // 为每个分类创建文件夹并移动书签
     for (const folderData of folders) {
       const { folder: folderPath, bookmarks } = folderData;
-      
-      if (!bookmarks || bookmarks.length === 0) {
-        continue;
-      }
-      
+      if (!bookmarks || bookmarks.length === 0) continue;
       try {
-        // 递归创建或查找文件夹
         const targetFolder = await findOrCreateFolderPath(folderPath);
-        
-        // 移动书签到目标文件夹
         for (const bookmark of bookmarks) {
-          try {
-            // 2. 【核心修复】在移动前检查书签是否依然存在
-            const existCheck = await chrome.bookmarks.get(bookmark.id).catch(() => null);
-            
-            if (existCheck) {
-              await chrome.bookmarks.move(bookmark.id, {
-                parentId: targetFolder.id
-              });
-              console.log(`Successfully moved: ${bookmark.title}`);
-            } else {
-              console.warn(`[Skip] 书签已被提前删除或不存在: ${bookmark.title} (ID: ${bookmark.id})`);
-            }
-          } catch (moveError) {
-            // 即使单个书签移动失败（比如权限问题），也不要影响后续书签
-            console.error(`移动单个书签失败: ${bookmark.title}`, moveError);
-          }
+          await safeMoveBookmark(bookmark.id, targetFolder.id);
         }
       } catch (error) {
         console.error(`Error processing folder ${folderPath}:`, error);
         // 继续处理下一个文件夹
+      }
+    }
+    if (missingBookmarks.length > 0) {
+      console.log(`[Organize] 正在处理 ${missingBookmarks.length} 个遗漏项至“待手动分类”...`);
+      const fallbackFolder = await findOrCreateFolderPath('待手动分类');
+      for (const bookmark of missingBookmarks) {
+        await safeMoveBookmark(bookmark.id, fallbackFolder.id);
       }
     }
     await Promise.all([
@@ -1599,7 +1597,16 @@ async function organizeBookmarks(data) {
     throw error;
   }
 }
-
+async function safeMoveBookmark(id, parentId) {
+  try {
+    const existCheck = await chrome.bookmarks.get(id).catch(() => null);
+    if (existCheck) {
+      await chrome.bookmarks.move(id, { parentId });
+    }
+  } catch (e) {
+    console.warn(`[Skip] 移动失败 (ID: ${id}):`, e);
+  }
+}
 // 存储工具函数
 async function getStorage(key) {
   const result = await chrome.storage.local.get(key);

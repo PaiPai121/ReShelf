@@ -789,7 +789,10 @@ async function confirmOrganize() {
   
   chrome.runtime.sendMessage({
     type: 'organizeBookmarks',
-    data: aiClassificationResult
+    data: {
+      ...aiClassificationResult,
+      originalBookmarks: validBookmarks // 【新增】传入参与分类的原始书签全集
+    }
   }, (response) => {
     if (chrome.runtime.lastError) {
       console.error('Error:', chrome.runtime.lastError);
