@@ -536,7 +536,7 @@ async function getRawBookmarksDirectly() {
       // 使用您现有的 flattenBookmarkTree 函数
       const all = flattenBookmarkTree(tree);
       // 仅保留有有效 URL 的书签
-      resolve(all.filter(b => b.url && b.url.startsWith('http')));
+      resolve(all.filter(b => b.url && b.url.trim().length > 0)); // 只要有 URL 的书签都参与分析，不限协议
     });
   });
 }

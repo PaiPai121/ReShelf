@@ -1589,7 +1589,10 @@ async function organizeBookmarks(data) {
         // 继续处理下一个文件夹
       }
     }
-    
+    await Promise.all([
+      cleanEmptyFolders('1'),
+      cleanEmptyFolders('2')
+    ]);
     console.log('Bookmark organization completed');
   } catch (error) {
     console.error('Organize error:', error);
@@ -1605,4 +1608,35 @@ async function getStorage(key) {
 
 async function setStorage(key, value) {
   await chrome.storage.local.set({ [key]: value });
+}
+
+/**
+ * 递归清理空文件夹 (自下而上)
+ * @param {string} folderId 当前检查的文件夹 ID
+ */
+async function cleanEmptyFolders(folderId) {
+  // 系统保留文件夹 ID (0: 根, 1: 书签栏, 2: 其他书签, 3: 移动书签)
+  const protectedIds = ['0', '1', '2', '3'];
+  
+  const children = await chrome.bookmarks.getChildren(folderId);
+  
+  // 1. 先递归处理所有子文件夹
+  for (const child of children) {
+    if (!child.url) { // 如果是文件夹
+      await cleanEmptyFolders(child.id);
+    }
+  }
+
+  // 2. 处理完子项后，重新获取当前文件夹的状态
+  const updatedChildren = await chrome.bookmarks.getChildren(folderId);
+  
+  // 3. 如果文件夹现在变空了，且不是受保护的系统文件夹，则执行删除
+  if (updatedChildren.length === 0 && !protectedIds.includes(folderId)) {
+    try {
+      await chrome.bookmarks.remove(folderId);
+      console.log(`[Cleanup] 已删除空文件夹: ID ${folderId}`);
+    } catch (e) {
+      console.warn(`[Cleanup] 删除文件夹 ${folderId} 失败（可能已被删除）:`, e);
+    }
+  }
 }
