@@ -324,7 +324,13 @@ async function classifyBookmarks(data) {
         apiKeyLength: data.apiKey?.length || 0,
         apiBaseUrl: data.apiBaseUrl || '使用默认'
     });
-
+// 【新增：强效起搏器】启动一个并行的定时器，不阻塞主流程
+const keepAliveTimer = setInterval(() => {
+  // 这里的 getPlatformInfo 只是为了触发 Chrome 的内部活跃检测
+  chrome.runtime.getPlatformInfo(() => {
+      console.log('[SW-Guard] 发送强力心跳，当前时间:', new Date().toLocaleTimeString());
+  });
+}, 20000); // 每 20 秒跳动一次，确保在 30 秒阈值内
   const { bookmarks, apiProvider, apiKey, apiBaseUrl } = data;
 
     // 1. 数据输入检查 (The Input Gate)
@@ -390,17 +396,13 @@ async function classifyBookmarks(data) {
           sendClassifyProgress('🚫 分类已中止');
           return; // 直接跳出整个异步函数
       }
-      // 2. 【心脏起搏器】每批次触发一次心跳，防止 Service Worker 休眠
-    await new Promise(resolve => chrome.runtime.getPlatformInfo(() => resolve()));
           const windowEnd = Math.min(windowStart + BATCH_SIZE, validBookmarks.length);
           const batch = validBookmarks.slice(windowStart, windowEnd);
       const batchNumber = Math.floor(windowStart / (BATCH_SIZE - WINDOW_OVERLAP)) + 1;
           const estimatedBatches = Math.ceil(validBookmarks.length / (BATCH_SIZE - WINDOW_OVERLAP));
       
           sendClassifyProgress(`正在分析第 ${batchNumber} 批书签 (${windowStart + 1}-${windowEnd}/${validBookmarks.length})...`);
-      // 3. 【超时控制】初始化控制器
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000); // 设置 1.5 分钟超时
+      
       try {
           console.log(`[classifyBookmarks] 处理批次 ${batchNumber}/${estimatedBatches}:`, {
               batchSize: batch.length,
@@ -418,10 +420,9 @@ async function classifyBookmarks(data) {
           apiKey,
             apiBaseUrl,
             existingFolderNames,
-            aggregationLevel,
-            controller.signal // 必须确保 callAIClassifyAPI 内部的 fetch 使用了此 signal
+            aggregationLevel
         );
-        clearTimeout(timeoutId); // 成功响应后清除定时器
+        
           console.log(`[classifyBookmarks] API 响应接收:`, {
               hasResult: !!batchResult,
               foldersCount: batchResult?.folders?.length || 0,
@@ -490,6 +491,7 @@ async function classifyBookmarks(data) {
         // 增加延迟，避免连续失败
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
+      
     }
     
       console.log(`[classifyBookmarks] 所有批次处理完成，共获得 ${allFolders.length} 个分类建议`);
@@ -526,6 +528,10 @@ async function classifyBookmarks(data) {
           bookmarksCount: validBookmarks?.length || 0
       });
       throw error;
+  } finally {
+    // 【关键】无论任务成功还是失败，必须清除定时器，否则 SW 会永远无法休眠
+    clearInterval(keepAliveTimer);
+    console.log('[SW-Guard] 任务结束，停止心跳');
   }
 }
 
