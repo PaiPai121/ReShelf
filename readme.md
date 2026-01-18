@@ -36,7 +36,7 @@
 4. **加载插件**：点击“加载已解压的扩展程序”，选择本项目所在的文件夹。
 5. **固定插件**：在浏览器右上角拼图图标中找到 **ReShelf** 并固定。
 
-直接[下载crx](https://github.com/PaiPai121/ReShelf/releases/tag/v1.0.0)
+直接[下载crx](https://github.com/PaiPai121/ReShelf/releases)
 ---
 
 ## 🚀 快速上手
