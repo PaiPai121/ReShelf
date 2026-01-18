@@ -460,16 +460,31 @@
           <label for="apiProvider">API 提供商</label>
           <select id="apiProvider" class="form-input">
             <option value="gemini">Google Gemini </option>
-            <option value="openrouter">OpenRouter (Free Models)</option>
-            <option value="zhipu">智谱 AI (GLM) - 需要充值</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="zhipu">智谱 AI (GLM)</option>
+            <option value="ollama">Ollama (本地运行)</option> </select>
+          <small class="form-hint" id="providerHint">
+            💡 提示：Ollama 需要在本地启动服务。默认地址：http://localhost:11434
+          </small>
           </select>
         <small class="form-hint" style="margin-top: 4px; display: block;">
             💡 提示：Gemini 提供免费额度，智谱 AI 需要充值。如果遇到余额不足，请切换到 Gemini。
         </small>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="apiKeyGroup">
           <label for="apiKey">API Key</label>
           <input type="password" id="apiKey" class="form-input" placeholder="请输入 API Key">
+        </div>
+        
+        <div class="form-group" id="ollamaModelGroup" style="display: none;">
+          <label for="ollamaModel" style="display: flex; justify-content: space-between;">
+            <span>本地模型 (Ollama)</span>
+            <button id="refreshModels" style="background:none; border:none; color:#667eea; cursor:pointer; font-size:12px;">🔄 刷新列表</button>
+          </label>
+          <select id="ollamaModel" class="form-input">
+            <option value="llama3">正在检测模型...</option>
+          </select>
+          <small class="form-hint">请确保 Ollama 已启动且设置了 OLLAMA_ORIGINS="*"</small>
         </div>
         <div class="form-group">
           <label for="apiBaseUrl">Base URL</label>

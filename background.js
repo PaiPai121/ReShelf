@@ -429,6 +429,8 @@ async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingF
     return await callZhipuAPI(bookmarks, prompt, apiKey, baseUrl);
   } else if (provider === 'openrouter') {
     return await callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl);
+  } else if (provider === 'ollama') {
+    return await callOllamaAPI(bookmarks, prompt, apiKey, baseUrl);
   } else {
     throw new Error(`不支持的 API 提供商: ${provider}`);
   }
@@ -668,6 +670,53 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
   }
   
   return parseAIResponse(responseText, bookmarks);
+}
+
+async function callOllamaAPI(bookmarks, prompt, apiKey, apiBaseUrl) {
+  // 默认使用本地地址和 llama3 模型（你可以根据自己安装的模型修改）
+  const storage = await chrome.storage.local.get('last_ollama_model');
+  const selectedModel = storage.last_ollama_model || 'llama3';
+
+  let baseUrl = (apiBaseUrl || 'http://localhost:11434').trim().replace(/\/$/, '') + '/api/chat';
+  if (!baseUrl.endsWith('/api/chat')) {
+      baseUrl = baseUrl.replace(/\/$/, '') + '/api/chat';
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000); // 3分钟超时
+
+  try {
+      const response = await fetch(baseUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+              model: selectedModel, // 或者是 'qwen2.5', 'mistral' 等
+              messages: [
+                  { role: 'system', content: '你是一位资深图书管理员，必须只返回 JSON 格式。' },
+                  { role: 'user', content: prompt }
+              ],
+              stream: false, // 必须关闭流式输出，以便获取完整 JSON
+              format: 'json' // 强制 Ollama 输出 JSON 格式
+          })
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Ollama 错误: ${response.status} - ${errorText}`);
+      }
+
+      const data = await response.json();
+      // Ollama 的响应结构在 message.content 中
+      const responseText = data.message?.content;
+      return parseAIResponse(responseText, bookmarks);
+
+  } catch (error) {
+      if (error.name === 'AbortError') throw new Error('Ollama 响应超时，请检查本地服务负载。');
+      throw error;
+  }
 }
 
 async function callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl) {
@@ -1018,6 +1067,38 @@ async function testApiConnection(data) {
               const errorText = await response.text();
               throw new Error(`OpenRouter 错误 (${response.status}): ${errorText}`);
           }
+        } else if (apiProvider === 'ollama') {
+          // 1. 格式化基础路径
+          const storage = await chrome.storage.local.get('last_ollama_model');
+          const selectedModel = storage.last_ollama_model || 'llama3';
+          let baseUrl = (apiBaseUrl || 'http://localhost:11434').trim().replace(/\/$/, '');
+          const chatUrl = `${baseUrl}/api/chat`;
+      
+          console.log('[testApiConnection] 开始 Ollama 深度测试:', chatUrl);
+      
+          // 2. 发起一个真实的简短对话测试
+          response = await fetch(chatUrl, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                  model: selectedModel, // 这里要确保你本地安装了此模型，或者改成你常用的模型名
+                  messages: [{ role: 'user', content: 'Hi' }],
+                  stream: false // 必须关闭流式，否则 fetch 拿不到完整 JSON
+              })
+          });
+      
+          // 3. 错误处理逻辑与 OpenRouter 保持一致
+          if (!response.ok) {
+              const errorText = await response.text();
+              console.error('[testApiConnection] Ollama 报错:', response.status, errorText);
+              throw new Error(`Ollama 响应异常 (${response.status}): ${errorText}`);
+          }
+      
+          const data = await response.json();
+          console.log('[testApiConnection] Ollama 测试成功，模型回复:', data.message?.content);
+      
       } else {
             throw new Error(`不支持的 API 提供商: ${apiProvider}`);
         }

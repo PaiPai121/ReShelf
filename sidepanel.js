@@ -43,6 +43,63 @@ const exportBackupBtn = document.getElementById('exportBackupBtn');
 const cleanAllBrokenBtn = document.getElementById('cleanAllBrokenBtn');
 const cleanAllDuplicatesBtn = document.getElementById('cleanAllDuplicatesBtn');
 
+const apiKeyGroup = document.getElementById('apiKeyGroup');
+const ollamaModelGroup = document.getElementById('ollamaModelGroup');
+const ollamaModelSelect = document.getElementById('ollamaModel');
+const refreshModelsBtn = document.getElementById('refreshModels');
+
+// 1. 监听提供商切换
+apiProvider.addEventListener('change', () => {
+  updateApiVisibility();
+});
+
+function updateApiVisibility() {
+  const provider = apiProvider.value;
+  if (provider === 'ollama') {
+    apiKeyGroup.style.display = 'none';      // 隐藏 Key
+    ollamaModelGroup.style.display = 'block'; // 显示模型列表
+    loadOllamaModels();                       // 自动加载一次模型
+  } else {
+    apiKeyGroup.style.display = 'block';     // 显示 Key
+    ollamaModelGroup.style.display = 'none';  // 隐藏模型列表
+  }
+}
+
+// 2. 异步加载 Ollama 模型列表
+async function loadOllamaModels() {
+  const baseUrl = (apiBaseUrl.value || 'http://localhost:11434').trim().replace(/\/$/, '');
+  
+  try {
+    const response = await fetch(`${baseUrl}/api/tags`);
+    if (!response.ok) throw new Error();
+    const data = await response.json();
+    
+    ollamaModelSelect.innerHTML = '';
+    if (data.models && data.models.length > 0) {
+      data.models.forEach(m => {
+        const option = document.createElement('option');
+        option.value = m.name;
+        option.textContent = m.name;
+        ollamaModelSelect.appendChild(option);
+      });
+      // 恢复之前选择的模型
+      const saved = await chrome.storage.local.get('last_ollama_model');
+      if (saved.last_ollama_model) ollamaModelSelect.value = saved.last_ollama_model;
+    } else {
+      ollamaModelSelect.innerHTML = '<option value="">未找到已下载的模型</option>';
+    }
+  } catch (e) {
+    ollamaModelSelect.innerHTML = '<option value="">无法连接到 Ollama 服务</option>';
+  }
+}
+
+// 3. 监听模型选择变化并保存
+ollamaModelSelect.addEventListener('change', () => {
+  chrome.storage.local.set({ 'last_ollama_model': ollamaModelSelect.value });
+});
+
+refreshModelsBtn.addEventListener('click', loadOllamaModels);
+
 // 初始化
 document.addEventListener('DOMContentLoaded', async () => {
   // 加载保存的 API 设置
@@ -80,7 +137,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   saveApiSettings.addEventListener('click', saveApiSettingsHandler);
+  const ollamaModelSelect = document.getElementById('ollamaModel');
 
+  // 监听下拉选单变化，实时更新 storage
+  ollamaModelSelect.addEventListener('change', () => {
+      const selectedModel = ollamaModelSelect.value;
+      console.log('[sidepanel] 切换本地模型为:', selectedModel);
+      chrome.storage.local.set({ 'last_ollama_model': selectedModel });
+  });
   // 测试连接按钮
   const testApiConnection = document.getElementById('testApiConnection');
   testApiConnection.addEventListener('click', testApiConnectionHandler);
@@ -115,6 +179,7 @@ if (storage.last_index > 0) {
     classifyBtn.textContent = '🚀 继续上次分类';
     classifyBtn.style.background = 'linear-gradient(135deg, #FF9800 0%, #F44336 100%)';
 }
+updateApiVisibility();
 });
 
 // 开始扫描
@@ -469,12 +534,21 @@ async function saveApiSettingsHandler() {
   const provider = apiProvider.value;
   const key = apiKey.value.trim();
   const baseUrl = apiBaseUrl.value.trim();
+  const model = document.getElementById('ollamaModel').value; // 【新增】获取当前选中的本地模型
   
   if (!key) {
     showApiStatus('请输入 API Key', 'error');
     return;
   }
-  
+
+  // 保存时增加 last_ollama_model 字段
+  await chrome.storage.local.set({
+    apiProvider: provider,
+    apiKey: key,
+    apiBaseUrl: baseUrl,
+    last_ollama_model: model // 【新增】确保模型名称被持久化
+  });
+
   await chrome.storage.local.set({
     apiProvider: provider,
     apiKey: key,
