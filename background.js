@@ -318,7 +318,7 @@ async function classifyBookmarks(data) {
   isAbortRequested = false;
   console.log('[classifyBookmarks] ========== 开始分类任务 ==========');
   
-  const { bookmarks, apiProvider, apiKey, apiBaseUrl, aggregationLevel = 'medium' } = data;
+  const { bookmarks, apiProvider, apiKey, apiBaseUrl, aggregationLevel = 'medium', customModel } = data;
 
   // 1. 尝试从本地存储恢复断点进度
   const storage = await chrome.storage.local.get(['classify_cache', 'last_index']);
@@ -352,7 +352,7 @@ async function classifyBookmarks(data) {
 
           try {
               // 发起 API 请求（带之前实现的超时控制）
-              const batchResult = await callAIClassifyAPI(batch, apiProvider, apiKey, apiBaseUrl, [], aggregationLevel);
+              const batchResult = await callAIClassifyAPI(batch, apiProvider, apiKey, apiBaseUrl, [], aggregationLevel, customModel);
 
               if (batchResult && batchResult.folders) {
                   allFolders.push(...batchResult.folders);
@@ -410,8 +410,7 @@ async function classifyBookmarks(data) {
   }
 }
 // 调用 AI API（支持 Gemini 和智谱 AI）
-async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingFolders = [], aggregationLevel = 'medium') {
-    console.log('[callAIClassifyAPI] ========== API 调用拦截器 ==========');
+async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingFolders = [], aggregationLevel = 'medium', customModel) {    console.log('[callAIClassifyAPI] ========== API 调用拦截器 ==========');
     console.log('[callAIClassifyAPI] 开始构建 Prompt...');
     const prompt = buildClassificationPrompt(bookmarks, existingFolders, aggregationLevel);
     console.log('[callAIClassifyAPI] Prompt 长度:', prompt.length, '字符');
@@ -424,6 +423,9 @@ async function callAIClassifyAPI(bookmarks, provider, apiKey, baseUrl, existingF
   if (provider === 'gemini') {
       console.log('[callAIClassifyAPI] 使用 Gemini API');
     return await callGeminiAPI(bookmarks, prompt, apiKey, baseUrl);
+  } else if (provider === 'custom') {
+    // 新增：转发给自定义 OpenAI 兼容接口函数
+    return await callCustomOpenAIAPI(bookmarks, prompt, apiKey, baseUrl, customModel);
   } else if (provider === 'zhipu') {
       console.log('[callAIClassifyAPI] 使用智谱 AI API');
     return await callZhipuAPI(bookmarks, prompt, apiKey, baseUrl);
@@ -719,6 +721,84 @@ async function callOllamaAPI(bookmarks, prompt, apiKey, apiBaseUrl) {
   }
 }
 
+// 在 background.js 中新增此函数
+async function callCustomOpenAIAPI(bookmarks, prompt, apiKey, baseUrl, modelName) {
+  // 自动补全 URL：如果填的是基础路径，自动加上 /chat/completions
+  console.log('正在调用模型:', modelName);
+  let apiUrl = (baseUrl || 'https://api.openai.com/v1').trim().replace(/\/$/, '');
+  if (!apiUrl.endsWith('/chat/completions')) {
+      apiUrl += '/chat/completions';
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000); // 3分钟超时
+
+  try {
+      const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+              model: modelName || 'gpt-3.5-turbo', // 使用传入的模型 ID
+              messages: [
+                  { role: 'system', content: '你是一位资深图书管理员，必须只返回 JSON 格式。' },
+                  { role: 'user', content: prompt }
+              ],
+              temperature: 0.3
+          })
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`自定义 API 错误 (${response.status}): ${errorText.substring(0, 100)}`);
+      }
+
+      const data = await response.json();
+      const responseText = data.choices?.[0]?.message?.content;
+      return parseAIResponse(responseText, bookmarks);
+
+  } catch (error) {
+      if (error.name === 'AbortError') throw new Error('API 响应超时（3分钟），请检查网络或模型速度。');
+      throw error;
+  }
+}
+
+
+// 调用智谱 AI API (background.js)
+async function callZhipuAPI(bookmarks, prompt, apiKey, baseUrl) {
+  const apiUrl = baseUrl || 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+  
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'glm-4', // 或者使用你需要的模型版本
+      messages: [
+        { role: 'system', content: '你是一位资深图书管理员，必须只返回符合要求的 JSON 格式。' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.3
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`智谱 AI API 错误: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  const responseText = data.choices?.[0]?.message?.content;
+  
+  return parseAIResponse(responseText, bookmarks);
+}
 async function callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl) {
   const apiUrl = baseUrl || 'https://openrouter.ai/api/v1/chat/completions';
   
@@ -734,7 +814,9 @@ async function callOpenRouterAPI(bookmarks, prompt, apiKey, baseUrl) {
           method: 'POST',
           headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
+              'Authorization': `Bearer ${apiKey}`,
+              'HTTP-Referer': 'https://github.com/PaiPai121/ReShelf', 
+              'X-Title': 'ReShelf'
           },
           signal: controller.signal, // 绑定超时信号
           body: JSON.stringify({
@@ -960,13 +1042,14 @@ function sendClassifyProgress(message) {
 const OPENROUTER_FREE_MODEL = "z-ai/glm-4.5-air:free";
 // 测试 API 连接
 async function testApiConnection(data) {
-    const { apiProvider, apiKey, apiBaseUrl } = data;
+    const { apiProvider, apiKey, apiBaseUrl, customModel } = data;
 
     console.log('[testApiConnection] 开始测试 API 连接:', {
         provider: apiProvider,
         hasKey: !!apiKey,
         keyLength: apiKey?.length || 0,
-        baseUrl: apiBaseUrl || '默认'
+        baseUrl: apiBaseUrl || '默认',
+        customModel: customModel || '(使用默认)'
     });
 
     try {
@@ -1099,7 +1182,39 @@ async function testApiConnection(data) {
           const data = await response.json();
           console.log('[testApiConnection] Ollama 测试成功，模型回复:', data.message?.content);
       
-      } else {
+      } else if (apiProvider === 'custom') {
+        const apiUrl = apiBaseUrl || 'https://api.openai.com/v1/chat/completions';
+        const finalUrl = apiUrl.endsWith('/chat/completions') ? apiUrl : `${apiUrl.replace(/\/$/, '')}/chat/completions`;
+    
+        response = await fetch(finalUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                // 使用已解构的 customModel 参数
+                model: customModel || 'gpt-3.5-turbo', 
+                messages: [{ role: 'user', content: testPrompt }]
+            })
+        });
+        // 【新增修复】在解析 JSON 之前，先检查响应头
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const textError = await response.text();
+            console.error('[testApiConnection] 期待 JSON 但收到:', textError.substring(0, 100));
+            throw new Error(`接口配置错误：服务器返回了网页而非 JSON。请检查“Base URL”是否填写正确。`);
+        }
+        // 3. 错误处理逻辑与 OpenRouter 保持一致
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[testApiConnection] 报错:', response.status, errorText);
+          throw new Error(`custom 响应异常 (${response.status}): ${errorText}`);
+        }
+    
+        const jsonResult = await response.json();
+        console.log('[testApiConnection] 测试成功，模型回复:', jsonResult.message?.content);
+    } else {
             throw new Error(`不支持的 API 提供商: ${apiProvider}`);
         }
 

@@ -53,15 +53,27 @@ apiProvider.addEventListener('change', () => {
   updateApiVisibility();
 });
 
+
+// 在 sidepanel.js 的 DOM 元素声明处增加
+const customModelGroup = document.getElementById('customModelGroup');
+const customModel = document.getElementById('customModel');
+
 function updateApiVisibility() {
   const provider = apiProvider.value;
   if (provider === 'ollama') {
-    apiKeyGroup.style.display = 'none';      // 隐藏 Key
-    ollamaModelGroup.style.display = 'block'; // 显示模型列表
-    loadOllamaModels();                       // 自动加载一次模型
+    apiKeyGroup.style.display = 'none';
+    ollamaModelGroup.style.display = 'block';
+    loadOllamaModels();
   } else {
-    apiKeyGroup.style.display = 'block';     // 显示 Key
-    ollamaModelGroup.style.display = 'none';  // 隐藏模型列表
+    apiKeyGroup.style.display = 'block';
+    ollamaModelGroup.style.display = 'none';
+  }
+
+  // 新增：控制自定义模型 UI
+  if (provider === 'custom') {
+    customModelGroup.style.display = 'block';
+  } else {
+    customModelGroup.style.display = 'none';
   }
 }
 
@@ -518,43 +530,37 @@ async function restructureBookmarks() {
 
 // API 设置相关函数
 async function loadApiSettings() {
-  const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'apiBaseUrl']);
-  if (result.apiProvider) {
-    apiProvider.value = result.apiProvider;
-  }
-  if (result.apiKey) {
-    apiKey.value = result.apiKey;
-  }
-  if (result.apiBaseUrl) {
-    apiBaseUrl.value = result.apiBaseUrl;
-  }
+  const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'apiBaseUrl', 'customModel']);
+  if (result.apiProvider) apiProvider.value = result.apiProvider;
+  if (result.apiKey) apiKey.value = result.apiKey;
+  if (result.apiBaseUrl) apiBaseUrl.value = result.apiBaseUrl;
+  if (result.customModel) customModel.value = result.customModel;
+  updateApiVisibility();
 }
 
 async function saveApiSettingsHandler() {
   const provider = apiProvider.value;
   const key = apiKey.value.trim();
   const baseUrl = apiBaseUrl.value.trim();
-  const model = document.getElementById('ollamaModel').value; // 【新增】获取当前选中的本地模型
-  
-  if (!key) {
+  const oModel = document.getElementById('ollamaModel').value; // 获取本地模型
+  const cModel = document.getElementById('customModel').value.trim(); // 获取自定义模型
+
+  // 1. 基础验证：除了 Ollama（本地运行通常不需要 Key），其他模式必须填 Key
+  if (provider !== 'ollama' && !key) {
     showApiStatus('请输入 API Key', 'error');
     return;
   }
 
-  // 保存时增加 last_ollama_model 字段
+  // 2. 一次性保存所有字段，修复了原代码中重复调用 set 的问题
   await chrome.storage.local.set({
     apiProvider: provider,
     apiKey: key,
     apiBaseUrl: baseUrl,
-    last_ollama_model: model // 【新增】确保模型名称被持久化
-  });
-
-  await chrome.storage.local.set({
-    apiProvider: provider,
-    apiKey: key,
-    apiBaseUrl: baseUrl
+    last_ollama_model: oModel, // 保留 Ollama 设置
+    customModel: cModel        // 新增自定义模型设置
   });
   
+  // 3. UI 反馈逻辑
   showApiStatus('设置已保存', 'success');
   setTimeout(() => {
     apiStatus.style.display = 'none';
@@ -580,6 +586,11 @@ async function testApiConnectionHandler() {
   const key = apiKey.value.trim();
   const baseUrl = apiBaseUrl.value.trim();
   
+  // 获取自定义模型名称，优先使用输入框值，如果为空则从 storage 读取
+  const currentModel = customModel.value.trim();
+  const savedSettings = await chrome.storage.local.get('customModel');
+  const model = currentModel || savedSettings.customModel || ''; // 兜底为空字符串，让后端使用默认值
+  
   if (!key) {
     showApiStatus('请先输入 API Key', 'error');
     return;
@@ -594,7 +605,8 @@ async function testApiConnectionHandler() {
     data: {
       apiProvider: provider,
       apiKey: key,
-      apiBaseUrl: baseUrl
+      apiBaseUrl: baseUrl,
+      customModel: model // 添加自定义模型字段
     }
   }, (response) => {
     if (chrome.runtime.lastError) {
@@ -623,9 +635,10 @@ async function getRawBookmarksDirectly() {
 async function startAIClassification() {
   const isDebug = document.getElementById('debugMode').checked;
   
-  // 1. 检查 API 设置
-  const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'apiBaseUrl']);
-  if (!result.apiKey) {
+  // 1. 检查 API 设置 (增加获取 customModel)
+  const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'apiBaseUrl', 'customModel']);
+  // 如果不是 Ollama 模式且没有 Key，则提示（公益站通常需要 Key）
+  if (result.apiProvider !== 'ollama' && !result.apiKey) {
     alert('请先配置 API Key');
     apiSettingsContent.style.display = 'block';
     return;
@@ -666,7 +679,8 @@ async function startAIClassification() {
       apiKey: result.apiKey,
       apiBaseUrl: result.apiBaseUrl || '',
       aggregationLevel: document.getElementById('aggregationLevel').value === '0' ? 'low' : 
-                        (document.getElementById('aggregationLevel').value === '2' ? 'high' : 'medium')
+                        (document.getElementById('aggregationLevel').value === '2' ? 'high' : 'medium'),
+      customModel: customModel.value.trim() || result.customModel // 传入模型 ID
     }
   });
 }

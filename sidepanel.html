@@ -462,14 +462,19 @@
             <option value="gemini">Google Gemini </option>
             <option value="openrouter">OpenRouter</option>
             <option value="zhipu">智谱 AI (GLM)</option>
-            <option value="ollama">Ollama (本地运行)</option> </select>
+            <option value="ollama">Ollama (本地运行)</option>
+            <option value="custom">自定义 (OpenAI 兼容)</option> </select>
           <small class="form-hint" id="providerHint">
             💡 提示：Ollama 需要在本地启动服务。默认地址：http://localhost:11434
           </small>
-          </select>
-        <small class="form-hint" style="margin-top: 4px; display: block;">
+        <!-- <small class="form-hint" style="margin-top: 4px; display: block;">
             💡 提示：Gemini 提供免费额度，智谱 AI 需要充值。如果遇到余额不足，请切换到 Gemini。
-        </small>
+        </small> -->
+        </div>
+        <div class="form-group" id="customModelGroup" style="display: none;">
+          <label for="customModel">模型名称 (Model ID)</label>
+          <input type="text" id="customModel" class="form-input" placeholder="例如: gpt-4o 或 claude-3-5-sonnet">
+          <small class="form-hint">公益站通常支持填写特定的模型 ID</small>
         </div>
         <div class="form-group" id="apiKeyGroup">
           <label for="apiKey">API Key</label>
