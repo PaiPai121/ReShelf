@@ -5,6 +5,14 @@
 chrome.runtime.onInstalled.addListener(() => {
   console.log('ReShelf extension installed');
 });
+
+chrome.runtime.onInstalled.addListener(() => {
+  // 设置点击插件图标时直接打开侧边栏
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((error) => console.error("设置侧边栏行为失败:", error));
+});
+
 let isAbortRequested = false;
 // 监听来自 side panel 的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -128,44 +136,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === 'restoreBookmarks') {
       // 执行递归创建逻辑
-      executeRestore(message.data).then(() => {
+      executeRestoreBookmarks(message.data).then(() => {
         sendResponse({ status: 'success' });
       }).catch(err => {
         sendResponse({ status: 'error', error: err.message });
       });
       return true;
     }
-    async function executeRestore(nodes, parentId = null) {
-      if (!parentId) {
-        const tree = await chrome.bookmarks.getTree();
-        // 默认恢复到书签栏 (ID 1)
-        parentId = tree[0].children[0].id; 
-      }
-    
-      for (const node of nodes) {
-        try {
-          if (node.url) {
-            await chrome.bookmarks.create({
-              parentId: parentId,
-              title: node.title,
-              url: node.url
-            });
-          } else if (node.children) {
-            // 创建原有的文件夹结构
-            const newFolder = await chrome.bookmarks.create({
-              parentId: parentId,
-              title: node.title
-            });
-            // 递归进入下一层
-            await executeRestore(node.children, newFolder.id);
-          }
-        } catch (e) {
-          console.error(`恢复节点 ${node.title} 失败:`, e);
-          // 遇到个别错误继续执行，不中断整个过程
-        }
-      }
-    }
 });
+
+// 提取到外部的递归恢复函数
+async function executeRestoreBookmarks(nodes, parentId = null) {
+  if (!parentId) {
+    const tree = await chrome.bookmarks.getTree();
+    // 默认恢复到书签栏 (ID 1)
+    parentId = tree[0].children[0].id; 
+  }
+
+  for (const node of nodes) {
+    try {
+      if (node.url) {
+        await chrome.bookmarks.create({
+          parentId: parentId,
+          title: node.title,
+          url: node.url
+        });
+      } else if (node.children) {
+        // 创建原有的文件夹结构
+        const newFolder = await chrome.bookmarks.create({
+          parentId: parentId,
+          title: node.title
+        });
+        // 递归进入下一层
+        await executeRestoreBookmarks(node.children, newFolder.id);
+      }
+    } catch (e) {
+      console.error(`恢复节点 ${node.title} 失败:`, e);
+      // 遇到个别错误继续执行，不中断整个过程
+    }
+  }
+}
 
 // 开始扫描书签
 async function startBookmarkScan() {
@@ -642,12 +652,14 @@ async function callGeminiAPI(bookmarks, prompt, apiKey, baseUrl) {
         console.error('[callGeminiAPI] 状态文本:', response.statusText);
         console.error('[callGeminiAPI] 错误响应体:', errorText);
         console.error('[callGeminiAPI] 可能的原因:');
-        if (response.status === 401 || response.status === 403) {
+        if (response.status === 401) {
             console.error('  - API Key 无效或已过期');
+        } else if (response.status === 403) {
+            console.error('  - 权限被拒绝，可能是 API Key 无效或账户欠费');
+        } else if (response.status === 402) {
+            console.error('  - 账户欠费或配额不足');
         } else if (response.status === 429) {
             console.error('  - API 调用频率超限');
-        } else if (response.status === 402 || response.status === 403) {
-            console.error('  - 账户欠费或配额不足');
         } else if (response.status >= 500) {
             console.error('  - 服务器错误，可能是网络问题');
         }
@@ -890,10 +902,54 @@ function parseAIResponse(responseText, bookmarks) {
   // 方法3: 尝试修复常见的 JSON 格式问题
   try {
       console.log('[parseAIResponse] 尝试修复 JSON 格式问题...');
+    
     // 移除可能的注释
     jsonText = jsonText.replace(/\/\/.*$/gm, '');
-    // 移除尾随逗号
+    
+    // 修复常见的括号错误：将 ids 数组中的圆括号替换为方括号
+    // 1. 修复 "ids": [数字列表) 的模式（右边括号错误）
+    jsonText = jsonText.replace(/"ids"\s*:\s*\[([^\]]*?)\)/g, '"ids": [$1]');
+    // 2. 修复 "ids": (数字列表] 的模式（左边括号错误）
+    jsonText = jsonText.replace(/"ids"\s*:\s*\(([^\)]*?)\]/g, '"ids": [$1]');
+    // 3. 修复完全使用圆括号的情况 "ids": (数字列表)
+    jsonText = jsonText.replace(/"ids"\s*:\s*\(([^\)]*?)\)/g, '"ids": [$1]');
+    
+    // 修复对象之间缺少逗号的问题
+    // 匹配模式：} 后面跟着换行和 {，中间没有逗号
+    // 例如：}  \n  { 应该修复为 },\n  {
+    jsonText = jsonText.replace(/\}\s*\n\s*\{/g, '},\n  {');
+    // 也处理同一行的情况：} { 应该修复为 }, {
+    jsonText = jsonText.replace(/\}\s+\{/g, '}, {');
+    
+    // 修复截断的 JSON：移除不完整的数字和后续内容
+    // 匹配模式：数字后面既没有逗号也没有闭合括号，直接到了文本末尾或其他字符
+    // 例如：[1, 2, 3, 105... 应该修复为 [1, 2, 3]
+    jsonText = jsonText.replace(/,\s*(\d+)\s*([^,\]\}]*)$/m, '');
+    
+    // 移除尾随逗号（在补全括号之前）
     jsonText = jsonText.replace(/,(\s*[}\]])/g, '$1');
+    jsonText = jsonText.replace(/,\s*$/m, ''); // 移除末尾的逗号
+    
+    // 修复未闭合的数组和对象 - 使用栈来追踪正确的闭合顺序
+    const stack = [];
+    for (let i = 0; i < jsonText.length; i++) {
+      const char = jsonText[i];
+      if (char === '[') {
+        stack.push(']');
+      } else if (char === '{') {
+        stack.push('}');
+      } else if (char === ']' || char === '}') {
+        if (stack.length > 0 && stack[stack.length - 1] === char) {
+          stack.pop();
+        }
+      }
+    }
+    
+    // 按照栈的顺序补全闭合括号
+    if (stack.length > 0) {
+      console.log(`[parseAIResponse] 检测到 ${stack.length} 个未闭合的括号，正在补全: ${stack.reverse().join('')}`);
+      jsonText += stack.join('');
+    }
     
       console.log('[parseAIResponse] 修复后 JSON 预览:', jsonText.substring(0, 300));
 
@@ -944,25 +1000,46 @@ function parseAIResponse(responseText, bookmarks) {
       console.log('[parseAIResponse] ========== 解析成功 ==========');
       return { folders: result };
   } catch (error) {
-    console.error('解析 AI 响应失败:', error);
-    console.error('原始响应:', responseText.substring(0, 500));
+    console.error('[parseAIResponse] ========== JSON 解析失败 ==========');
+    console.error('[parseAIResponse] 错误类型:', error.name);
+    console.error('[parseAIResponse] 错误信息:', error.message);
+    console.error('[parseAIResponse] 原始响应 (前1000字符):', responseText.substring(0, 1000));
+    console.error('[parseAIResponse] 修复后的 JSON (前1000字符):', jsonText.substring(0, 1000));
+    
+    // 尝试找出具体的语法错误位置
+    if (error.message.includes('position')) {
+      const posMatch = error.message.match(/position (\d+)/);
+      if (posMatch) {
+        const pos = parseInt(posMatch[1]);
+        const start = Math.max(0, pos - 50);
+        const end = Math.min(jsonText.length, pos + 50);
+        console.error('[parseAIResponse] 错误位置附近的内容:', jsonText.substring(start, end));
+        console.error('[parseAIResponse] 错误位置标记:', ' '.repeat(Math.min(50, pos - start)) + '^');
+      }
+    }
     
     // 最后尝试：使用更宽松的解析
     try {
+      console.log('[parseAIResponse] 尝试使用宽松解析方法...');
       // 尝试提取所有可能的 JSON 对象
       const jsonObjects = [];
       const objectPattern = /\{[^{}]*"folder"[^{}]*"ids"[^{}]*\}/g;
       const matches = jsonText.match(objectPattern);
       
       if (matches && matches.length > 0) {
-        for (const match of matches) {
+        for (let match of matches) {
           try {
+            // 在单个对象上也应用括号修复
+            match = match.replace(/"ids"\s*:\s*\[([^\]]*?)\)/g, '"ids": [$1]');
+            match = match.replace(/"ids"\s*:\s*\(([^\)]*?)\]/g, '"ids": [$1]');
+            match = match.replace(/"ids"\s*:\s*\(([^\)]*?)\)/g, '"ids": [$1]');
+            
             const obj = JSON.parse(match);
             if (obj.folder && Array.isArray(obj.ids)) {
               jsonObjects.push(obj);
             }
           } catch (e) {
-            // 忽略单个对象解析错误
+            console.warn('[parseAIResponse] 单个对象解析失败:', e.message, '内容:', match.substring(0, 100));
           }
         }
         
@@ -1059,10 +1136,12 @@ async function testApiConnection(data) {
         if (apiProvider === 'gemini') {
             const model = 'gemini-flash-latest';
             let url;
-            if (!url.startsWith('http')) {
-              throw new Error('API 地址必须以 http:// 或 https:// 开头');
-            }
+            
             if (apiBaseUrl && apiBaseUrl.trim()) {
+                // 验证自定义 URL
+                if (!apiBaseUrl.startsWith('http')) {
+                    throw new Error('API 地址必须以 http:// 或 https:// 开头');
+                }
                 url = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
                 if (!url.includes('models/')) {
                     url = `${url}/models/${model}:generateContent`;
